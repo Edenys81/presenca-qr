@@ -1,0 +1,470 @@
+import { trpc } from "../lib/trpc";
+import DashboardLayout from "../components/DashboardLayout";
+import { Button } from "../components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
+import { Badge } from "../components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
+import { Loader2, Plus, Users, Calendar, TrendingUp, QrCode, LogOut, Eye, Edit2, Trash2, AlertCircle, CheckCircle } from "lucide-react";
+import { format } from "date-fns";
+import { ptBR } from "date-fns/locale";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { toast } from "sonner";
+import { useAuth } from "../_core/hooks/useAuth";
+import { useLocation } from "wouter";
+
+const eventSchema = z.object({
+  nome: z.string().min(1, "Nome é obrigatório"),
+  descricao: z.string().optional(),
+  data: z.string().min(1, "Data é obrigatória"),
+  horario: z.string().min(1, "Horário é obrigatório"),
+  local: z.string().min(1, "Local é obrigatório"),
+  cargaHoraria: z.coerce.number().min(0.5, "Carga horária deve ser maior que 0"),
+  creditos: z.coerce.number().min(0.5, "Créditos deve ser maior que 0"),
+});
+
+type EventFormData = z.infer<typeof eventSchema>;
+
+export default function AdminDashboard() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [selectedQrEvent, setSelectedQrEvent] = useState<any>(null);
+  const [selectedAttendanceEvent, setSelectedAttendanceEvent] = useState<any>(null);
+  const { logout } = useAuth();
+  const [, setLocation] = useLocation();
+  const { register, handleSubmit, reset } = useForm<EventFormData>({
+    resolver: zodResolver(eventSchema),
+  });
+
+  const { data: stats, isLoading: statsLoading } =
+    trpc.admin.getDashboardStats.useQuery();
+  const { data: events, isLoading: eventsLoading, refetch: refetchEvents } =
+    trpc.event.listAll.useQuery();
+  const { data: students, isLoading: studentsLoading } =
+    trpc.admin.getAllStudents.useQuery();
+  const { data: attendances } =
+    trpc.event.getAttendanceList.useQuery(
+      { eventId: selectedAttendanceEvent?.id },
+      {
+        enabled: !!selectedAttendanceEvent,
+        refetchInterval: 3000,
+      }
+    );
+
+  const createEventMutation = trpc.event.create.useMutation({
+    onSuccess: () => {
+      toast.success("Evento criado com sucesso!");
+      setIsOpen(false);
+      reset();
+      refetchEvents();
+    },
+    onError: (error) => {
+      toast.error(error.message || "Erro ao criar evento");
+    },
+  });
+  const updateEvent = trpc.event.update.useMutation({
+    onSuccess: () => {
+        toast.success("Evento ativado");
+        refetchEvents();
+    },
+  });
+
+  const onSubmit = (data: EventFormData) => {
+    const dateTime = new Date(`${data.data}T${data.horario}`);
+    createEventMutation.mutate({
+        ...data,
+        data: dateTime,
+    });
+ };
+
+  const handleLogout = async () => {
+    await logout();
+    setLocation("/");
+  };
+
+  const isLoading = statsLoading || eventsLoading || studentsLoading;
+
+  if (isLoading) {
+    return (
+      <DashboardLayout>
+        <div className="flex items-center justify-center h-screen">
+          <Loader2 className="h-8 w-8 animate-spin text-green-600" />
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  const getStatusBadge = (status: boolean) => {
+    return status ? 
+      <Badge className="bg-green-100 text-green-700">Ativo</Badge> :
+      <Badge className="bg-gray-100 text-gray-700">Inativo</Badge>;
+  };
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">
+              Painel Administrativo 🎯
+            </h1>
+            <p className="text-gray-600 mt-1">
+              Gerenciamento de eventos e créditos curriculares
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Dialog open={isOpen} onOpenChange={setIsOpen}>
+              <DialogTrigger asChild>
+                <Button className="bg-green-600 hover:bg-green-700 text-white">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Novo Evento
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Criar Novo Evento</DialogTitle>
+                  <DialogDescription>
+                    Preencha os dados do evento para gerar um QR Code
+                  </DialogDescription>
+                </DialogHeader>
+                <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+                  <div>
+                    <label className="text-sm font-medium">Nome do Evento *</label>
+                    <Input
+                      {...register("nome")}
+                      placeholder="Ex: Palestra de Tecnologia"
+                      className="border-green-200 focus:border-green-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Descrição</label>
+                    <Input
+                      {...register("descricao")}
+                      placeholder="Descrição do evento"
+                      className="border-green-200 focus:border-green-600"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-sm font-medium">Data *</label>
+                      <Input type="date" {...register("data")} className="border-green-200 focus:border-green-600" />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Horário *</label>
+                      <Input type="time" {...register("horario")} className="border-green-200 focus:border-green-600" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Local *</label>
+                    <Input
+                      {...register("local")}
+                      placeholder="Ex: Auditório Principal"
+                      className="border-green-200 focus:border-green-600"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-sm font-medium">
+                        Carga Horária (h) *
+                      </label>
+                      <Input
+                        type="number"
+                        step="0.5"
+                        {...register("cargaHoraria", {
+                          valueAsNumber: true,
+                        })}
+                        className="border-green-200 focus:border-green-600"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Créditos *</label>
+                      <Input
+                        type="number"
+                        step="0.5"
+                        {...register("creditos", { valueAsNumber: true })}
+                        className="border-green-200 focus:border-green-600"
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    type="submit"
+                    className="w-full bg-green-600 hover:bg-green-700 text-white"
+                    disabled={createEventMutation.isPending}
+                  >
+                    {createEventMutation.isPending ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Criando...
+                      </>
+                    ) : (
+                      "Criar Evento"
+                    )}
+                  </Button>
+                </form>
+              </DialogContent>
+            </Dialog>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleLogout}
+              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+            >
+              <LogOut className="w-4 h-4 mr-2" />
+              Sair
+            </Button>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Card className="border-green-100 hover:border-green-300 transition-colors shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                <Users className="w-4 h-4 text-green-600" />
+                Total de Alunos
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-green-600">{stats?.totalStudents || 0}</div>
+              <p className="text-xs text-gray-500 mt-1">Cadastrados no sistema</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-green-100 hover:border-green-300 transition-colors shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-green-600" />
+                Total de Eventos
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-green-600">{stats?.totalEvents || 0}</div>
+              <p className="text-xs text-gray-500 mt-1">
+                {stats?.activeEvents || 0} ativos
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-green-100 hover:border-green-300 transition-colors shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-green-600" />
+                Créditos Distribuídos
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-green-600">
+                {stats?.totalCreditsDistributed || 0}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">No total</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-green-100 hover:border-green-300 transition-colors shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 text-green-600" />
+                Taxa de Participação
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-green-600">
+                {stats?.totalEvents && stats?.totalStudents
+                  ? Math.round(
+                      (stats.totalCreditsDistributed /
+                        (stats.totalEvents * stats.totalStudents)) *
+                        100
+                    )
+                  : 0}
+                %
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Média por evento</p>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Tabs */}
+        <Tabs defaultValue="events" className="w-full">
+          <TabsList className="grid w-full grid-cols-2 bg-gray-100 border border-gray-200">
+            <TabsTrigger 
+              value="events"
+              className="data-[state=active]:bg-white data-[state=active]:text-green-600 data-[state=active]:border-b-2 data-[state=active]:border-green-600"
+            >
+              <Calendar className="h-4 w-4 mr-2" />
+              Eventos
+            </TabsTrigger>
+            <TabsTrigger 
+              value="students"
+              className="data-[state=active]:bg-white data-[state=active]:text-green-600 data-[state=active]:border-b-2 data-[state=active]:border-green-600"
+            >
+              <Users className="h-4 w-4 mr-2" />
+              Alunos
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Events Tab */}
+          <TabsContent value="events">
+            <Card className="border-green-100 shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-green-700">Eventos Cadastrados</CardTitle>
+                <CardDescription>
+                  Lista de todos os eventos com QR Codes gerados
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {events && events.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="border-green-100 hover:bg-green-50">
+                          <TableHead className="text-green-700">Evento</TableHead>
+                          <TableHead className="text-green-700">Data</TableHead>
+                          <TableHead className="text-green-700">Local</TableHead>
+                          <TableHead className="text-green-700">Créditos</TableHead>
+                          <TableHead className="text-green-700">Status</TableHead>
+                          <TableHead className="text-center text-green-700">QR Code</TableHead>
+                          <TableHead className="text-right text-green-700">Ações</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {events.map((event) => (
+                          <TableRow key={event.id} className="border-green-100 hover:bg-green-50">
+                            <TableCell className="font-medium text-gray-900">
+                              {event.nome}
+                            </TableCell>
+                            <TableCell className="text-gray-600">
+                              {format(new Date(event.data), "dd/MM/yyyy", {
+                                locale: ptBR,
+                              })}
+                            </TableCell>
+                            <TableCell className="text-gray-600">{event.local}</TableCell>
+                            <TableCell>
+                              <Badge className="bg-green-100 text-green-700">
+                                {event.creditos}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              {getStatusBadge(event.ativo)}
+                            </TableCell>
+                            <TableCell className="text-center">
+                              {event.qrCodeUrl ? (
+                                <img
+                                    src={event.qrCodeUrl}
+                                    alt="QR Code"
+                                    className="h-8 w-8 mx-auto"
+                                />
+                                ) : (
+                                <QrCode className="w-6 h-6 mx-auto text-gray-400" />
+                                )}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  onClick={() =>
+                                    updateEvent.mutate({
+                                      id: event.id,
+                                      ativo: !event.ativo,
+                                    })
+                                  }
+                                  className="p-1 hover:bg-green-100 rounded transition"
+                                >
+                                  <Eye className="w-4 h-4 text-green-600" />
+                                </button>
+                                <button className="p-1 hover:bg-blue-100 rounded transition">
+                                  <Edit2 className="w-4 h-4 text-blue-600" />
+                                </button>
+                                <button className="p-1 hover:bg-red-100 rounded transition">
+                                  <Trash2 className="w-4 h-4 text-red-600" />
+                                </button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <div className="text-center py-12 text-gray-500">
+                    <Calendar className="w-12 h-12 mx-auto mb-4 opacity-30" />
+                    Nenhum evento cadastrado ainda
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+           {/* Students Tab */}
+          <TabsContent value="students">
+            <Card>
+              <CardHeader>
+                <CardTitle>Alunos Cadastrados</CardTitle>
+                <CardDescription>
+                  Lista de todos os alunos e seus créditos acumulados
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {students && students.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Matrícula</TableHead>
+                          <TableHead>Nome</TableHead>
+                          <TableHead>Curso</TableHead>
+                          <TableHead>Email</TableHead>
+                          <TableHead className="text-right">Créditos</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {students.map((student) => (
+                          <TableRow key={student.id}>
+                            <TableCell className="font-medium">
+                              {student.matricula}
+                            </TableCell>
+                            <TableCell>{student.nome}</TableCell>
+                            <TableCell>{student.curso}</TableCell>
+                            <TableCell className="text-sm">
+                              {student.email}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Badge variant="secondary">
+                                {student.creditosTotais}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    Nenhum aluno cadastrado ainda
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </DashboardLayout>
+  );
+}

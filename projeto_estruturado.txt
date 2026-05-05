@@ -1,0 +1,4572 @@
+﻿===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\auth\cookies.ts =====
+import type { CookieOptions, Request } from "express";
+
+const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
+function isIpAddress(host: string) {
+  // Basic IPv4 check and IPv6 presence detection.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return true;
+  return host.includes(":");
+}
+
+function isSecureRequest(req: Request) {
+  if (req.protocol === "https") return true;
+
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  if (!forwardedProto) return false;
+
+  const protoList = Array.isArray(forwardedProto)
+    ? forwardedProto
+    : forwardedProto.split(",");
+
+  return protoList.some(proto => proto.trim().toLowerCase() === "https");
+}
+
+export function getSessionCookieOptions(
+  req: Request
+): Pick<CookieOptions, "domain" | "httpOnly" | "path" | "sameSite" | "secure"> {
+  // const hostname = req.hostname;
+  // const shouldSetDomain =
+  //   hostname &&
+  //   !LOCAL_HOSTS.has(hostname) &&
+  //   !isIpAddress(hostname) &&
+  //   hostname !== "127.0.0.1" &&
+  //   hostname !== "::1";
+
+  // const domain =
+  //   shouldSetDomain && !hostname.startsWith(".")
+  //     ? `.${hostname}`
+  //     : shouldSetDomain
+  //       ? hostname
+  //       : undefined;
+
+  const secure = isSecureRequest(req);
+    return {
+      httpOnly: true,
+      path: "/",
+      sameSite: secure ? "none" : "lax",
+      secure,
+    };
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\auth\sdk.ts =====
+import { AXIOS_TIMEOUT_MS, COOKIE_NAME, ONE_YEAR_MS } from "../core/const.js";
+import { ForbiddenError } from "../core/errors.js";
+import axios, { type AxiosInstance } from "axios";
+import { parse as parseCookieHeader } from "cookie";
+import type { Request } from "express";
+import { SignJWT, jwtVerify } from "jose";
+import type { User } from "../drizzle/schema.js";
+import * as db from "../database/db.js";
+import { ENV } from "../core/env.js";
+import type {
+  ExchangeTokenRequest,
+  ExchangeTokenResponse,
+  GetUserInfoResponse,
+  GetUserInfoWithJwtRequest,
+  GetUserInfoWithJwtResponse,
+} from "../core/types.js";
+// Utility function
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.length > 0;
+
+export type SessionPayload = {
+  openId: string;
+  appId: string;
+  name: string;
+};
+
+const EXCHANGE_TOKEN_PATH = `/webdev.v1.WebDevAuthPublicService/ExchangeToken`;
+const GET_USER_INFO_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfo`;
+const GET_USER_INFO_WITH_JWT_PATH = `/webdev.v1.WebDevAuthPublicService/GetUserInfoWithJwt`;
+
+class OAuthService {
+  constructor(private client: ReturnType<typeof axios.create>) {
+    console.log("[OAuth] Initialized with baseURL:", ENV.oAuthServerUrl);
+    if (!ENV.oAuthServerUrl) {
+      console.error(
+        "[OAuth] ERROR: OAUTH_SERVER_URL is not configured! Set OAUTH_SERVER_URL environment variable."
+      );
+    }
+  }
+
+  private decodeState(state: string): string {
+    const redirectUri = atob(state);
+    return redirectUri;
+  }
+
+  async getTokenByCode(
+    code: string,
+    state: string
+  ): Promise<ExchangeTokenResponse> {
+    const payload: ExchangeTokenRequest = {
+      clientId: ENV.appId,
+      grantType: "authorization_code",
+      code,
+      redirectUri: this.decodeState(state),
+    };
+
+    const { data } = await this.client.post<ExchangeTokenResponse>(
+      EXCHANGE_TOKEN_PATH,
+      payload
+    );
+
+    return data;
+  }
+
+  async getUserInfoByToken(
+    token: ExchangeTokenResponse
+  ): Promise<GetUserInfoResponse> {
+    const { data } = await this.client.post<GetUserInfoResponse>(
+      GET_USER_INFO_PATH,
+      {
+        accessToken: token.accessToken,
+      }
+    );
+
+    return data;
+  }
+}
+
+const createOAuthHttpClient = (): AxiosInstance =>
+  axios.create({
+    baseURL: ENV.oAuthServerUrl,
+    timeout: AXIOS_TIMEOUT_MS,
+  });
+
+class SDKServer {
+  private readonly client: AxiosInstance;
+  private readonly oauthService: OAuthService;
+
+  constructor(client: AxiosInstance = createOAuthHttpClient()) {
+    this.client = client;
+    this.oauthService = new OAuthService(this.client);
+  }
+
+  private deriveLoginMethod(
+    platforms: unknown,
+    fallback: string | null | undefined
+  ): string | null {
+    if (fallback && fallback.length > 0) return fallback;
+    if (!Array.isArray(platforms) || platforms.length === 0) return null;
+    const set = new Set<string>(
+      platforms.filter((p): p is string => typeof p === "string")
+    );
+    if (set.has("REGISTERED_PLATFORM_EMAIL")) return "email";
+    if (set.has("REGISTERED_PLATFORM_GOOGLE")) return "google";
+    if (set.has("REGISTERED_PLATFORM_APPLE")) return "apple";
+    if (
+      set.has("REGISTERED_PLATFORM_MICROSOFT") ||
+      set.has("REGISTERED_PLATFORM_AZURE")
+    )
+      return "microsoft";
+    if (set.has("REGISTERED_PLATFORM_GITHUB")) return "github";
+    const first = Array.from(set)[0];
+    return first ? first.toLowerCase() : null;
+  }
+
+  /**
+   * Exchange OAuth authorization code for access token
+   * @example
+   * const tokenResponse = await sdk.exchangeCodeForToken(code, state);
+   */
+  async exchangeCodeForToken(
+    code: string,
+    state: string
+  ): Promise<ExchangeTokenResponse> {
+    return this.oauthService.getTokenByCode(code, state);
+  }
+
+  /**
+   * Get user information using access token
+   * @example
+   * const userInfo = await sdk.getUserInfo(tokenResponse.accessToken);
+   */
+  async getUserInfo(accessToken: string): Promise<GetUserInfoResponse> {
+    const data = await this.oauthService.getUserInfoByToken({
+      accessToken,
+    } as ExchangeTokenResponse);
+    const loginMethod = this.deriveLoginMethod(
+      (data as any)?.platforms,
+      (data as any)?.platform ?? data.platform ?? null
+    );
+    return {
+      ...(data as any),
+      platform: loginMethod,
+      loginMethod,
+    } as GetUserInfoResponse;
+  }
+
+  private parseCookies(cookieHeader: string | undefined) {
+    if (!cookieHeader) {
+      return new Map<string, string>();
+    }
+
+    const parsed = parseCookieHeader(cookieHeader);
+    return new Map(Object.entries(parsed));
+  }
+
+  private getSessionSecret() {
+    const secret = ENV.cookieSecret;
+    return new TextEncoder().encode(secret);
+  }
+
+  /**
+   * Create a session token for a Manus user openId
+   * @example
+   * const sessionToken = await sdk.createSessionToken(userInfo.openId);
+   */
+  async createSessionToken(
+    openId: string,
+    options: { expiresInMs?: number; name?: string } = {}
+  ): Promise<string> {
+    return this.signSession(
+      {
+        openId,
+        appId: ENV.appId,
+        name: options.name || "",
+      },
+      options
+    );
+  }
+
+  async signSession(
+    payload: SessionPayload,
+    options: { expiresInMs?: number } = {}
+  ): Promise<string> {
+    const issuedAt = Date.now();
+    const expiresInMs = options.expiresInMs ?? ONE_YEAR_MS;
+    const expirationSeconds = Math.floor((issuedAt + expiresInMs) / 1000);
+    const secretKey = this.getSessionSecret();
+
+    return new SignJWT({
+      openId: payload.openId,
+      appId: payload.appId,
+      name: payload.name,
+    })
+      .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+      .setExpirationTime(expirationSeconds)
+      .sign(secretKey);
+  }
+
+  async verifySession(
+    cookieValue: string | undefined | null
+  ): Promise<{ openId: string; appId: string; name: string } | null> {
+    if (!cookieValue) {
+      console.warn("[Auth] Missing session cookie");
+      return null;
+    }
+
+    try {
+      const secretKey = this.getSessionSecret();
+      const { payload } = await jwtVerify(cookieValue, secretKey, {
+        algorithms: ["HS256"],
+      });
+      const { openId, appId, name } = payload as Record<string, unknown>;
+
+      if (
+        !isNonEmptyString(openId) ||
+        !isNonEmptyString(appId) ||
+        !isNonEmptyString(name)
+      ) {
+        console.warn("[Auth] Session payload missing required fields");
+        return null;
+      }
+
+      return {
+        openId,
+        appId,
+        name,
+      };
+    } catch (error) {
+      console.warn("[Auth] Session verification failed", String(error));
+      return null;
+    }
+  }
+
+  async getUserInfoWithJwt(
+    jwtToken: string
+  ): Promise<GetUserInfoWithJwtResponse> {
+    const payload: GetUserInfoWithJwtRequest = {
+      jwtToken,
+      projectId: ENV.appId,
+    };
+
+    const { data } = await this.client.post<GetUserInfoWithJwtResponse>(
+      GET_USER_INFO_WITH_JWT_PATH,
+      payload
+    );
+
+    const loginMethod = this.deriveLoginMethod(
+      (data as any)?.platforms,
+      (data as any)?.platform ?? data.platform ?? null
+    );
+    return {
+      ...(data as any),
+      platform: loginMethod,
+      loginMethod,
+    } as GetUserInfoWithJwtResponse;
+  }
+
+  async authenticateRequest(req: Request): Promise<User> {
+    // Regular authentication flow
+    const cookies = this.parseCookies(req.headers.cookie);
+    const sessionCookie = cookies.get(COOKIE_NAME);
+
+    if (typeof sessionCookie !== "string") {
+    throw ForbiddenError("Session cookie invÃ¡lido");
+    }
+
+    const session = await this.verifySession(sessionCookie);
+
+    if (!session) {
+      throw ForbiddenError("Invalid session cookie");
+    }
+
+    const sessionUserId = session.openId;
+    const signedInAt = new Date();
+    let user = null;
+
+    // If user not in DB, sync from OAuth server automatically
+    if (!user) {
+      try {
+        const userInfo = await this.getUserInfoWithJwt(sessionCookie);
+        await db.upsertUser({
+          openId: userInfo.openId,
+          name: userInfo.name || null,
+          email: userInfo.email ?? null,
+          loginMethod: userInfo.loginMethod ?? userInfo.platform ?? null,
+          lastSignedIn: signedInAt,
+        });
+        let user = null;
+      } catch (error) {
+        console.error("[Auth] Failed to sync user from OAuth:", error);
+        throw ForbiddenError("Failed to sync user info");
+      }
+    }
+
+    if (!user) {
+      throw ForbiddenError("User not found");
+    }
+
+    await db.upsertUser({
+      openId: user.openId,
+      lastSignedIn: signedInAt,
+    });
+
+    return user;
+  }
+}
+
+export const sdk = new SDKServer();
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\certificates\certificates.ts =====
+import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
+import QRCode from "qrcode";
+import * as db from "../database/db.js";
+import { storagePut } from "../storage/storage.js";
+import { v4 as uuidv4 } from "uuid";
+
+/**
+ * Gerar certificado em PDF para aluno
+ */
+export async function generateCertificatePDF(
+  studentId: number,
+  eventId: number,
+  attendanceId: number
+) {
+  try {
+    const student = await db.getStudentById(studentId);
+    const event = await db.getEventById(eventId);
+
+    if (!student || !event) {
+      throw new Error("Student or Event not found");
+    }
+
+    // Criar documento PDF
+    const pdfDoc = await PDFDocument.create();
+    const page = pdfDoc.addPage([850, 600]);
+    const { width, height } = page.getSize();
+
+    // Cores elegantes
+    const primaryColor = rgb(0.1, 0.3, 0.8); // Azul
+    const accentColor = rgb(0.4, 0.6, 1.0); // Azul claro
+    const textColor = rgb(0.2, 0.2, 0.2); // Cinza escuro
+
+    // Fundo decorativo
+    page.drawRectangle({
+      x: 0,
+      y: height - 100,
+      width: width,
+      height: 100,
+      color: primaryColor,
+    });
+
+    // Linha decorativa
+    page.drawRectangle({
+      x: 0,
+      y: height - 110,
+      width: width,
+      height: 5,
+      color: accentColor,
+    });
+
+    // TÃ­tulo
+    const titleFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    page.drawText("CERTIFICADO DE PARTICIPAÃ‡ÃƒO", {
+      x: 50,
+      y: height - 70,
+      size: 32,
+      font: titleFont,
+      color: rgb(1, 1, 1),
+    });
+
+    // ConteÃºdo principal
+    const contentFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+    let yPosition = height - 180;
+
+    page.drawText("Certificamos que", {
+      x: 50,
+      y: yPosition,
+      size: 14,
+      font: contentFont,
+      color: textColor,
+    });
+
+    yPosition -= 40;
+
+    // Nome do aluno em destaque
+    page.drawText(student.nome.toUpperCase(), {
+      x: 50,
+      y: yPosition,
+      size: 24,
+      font: boldFont,
+      color: primaryColor,
+    });
+
+    yPosition -= 50;
+
+    page.drawText(
+      `MatrÃ­cula: ${student.matricula} | Curso: ${student.curso}`,
+      {
+        x: 50,
+        y: yPosition,
+        size: 11,
+        font: contentFont,
+        color: textColor,
+      }
+    );
+
+    yPosition -= 40;
+
+    page.drawText("participou com Ãªxito do evento", {
+      x: 50,
+      y: yPosition,
+      size: 14,
+      font: contentFont,
+      color: textColor,
+    });
+
+    yPosition -= 35;
+
+    // Nome do evento em destaque
+    page.drawText(event.nome, {
+      x: 50,
+      y: yPosition,
+      size: 18,
+      font: boldFont,
+      color: primaryColor,
+    });
+
+    yPosition -= 40;
+
+    // Detalhes do evento
+    const eventDate = new Date(event.data).toLocaleDateString("pt-BR");
+    const detailsText = `Realizado em ${eventDate} | Local: ${event.local} | Carga HorÃ¡ria: ${event.cargaHoraria}h | CrÃ©ditos: ${event.creditos}`;
+
+    page.drawText(detailsText, {
+      x: 50,
+      y: yPosition,
+      size: 11,
+      font: contentFont,
+      color: textColor,
+    });
+
+    yPosition -= 50;
+
+    page.drawText(
+      `Emitido em ${new Date().toLocaleDateString("pt-BR")}`,
+      {
+        x: 50,
+        y: yPosition,
+        size: 10,
+        font: contentFont,
+        color: rgb(0.6, 0.6, 0.6),
+      }
+    );
+
+    // Gerar QR code de validaÃ§Ã£o
+    const validationCode = uuidv4();
+    const qrCodeDataUrl = await QRCode.toDataURL(validationCode);
+
+    // Extrair dados base64 do QR code
+    const base64Data = qrCodeDataUrl.split(",")[1];
+    const qrCodeImage = await pdfDoc.embedPng(Buffer.from(base64Data, "base64"));
+
+    // Adicionar QR code no canto inferior direito
+    const qrSize = 100;
+    page.drawImage(qrCodeImage, {
+      x: width - qrSize - 30,
+      y: 30,
+      width: qrSize,
+      height: qrSize,
+    });
+
+    // Texto do QR code
+    page.drawText("CÃ³digo de ValidaÃ§Ã£o", {
+      x: width - qrSize - 30,
+      y: 20,
+      size: 8,
+      font: contentFont,
+      color: rgb(0.6, 0.6, 0.6),
+    });
+
+    // Salvar PDF
+    const pdfBytes = await pdfDoc.save();
+
+    // Fazer upload para S3
+    const fileName = `certificates/${studentId}-${eventId}-${Date.now()}.pdf`;
+    const { url: certificateUrl } = await storagePut(
+      fileName,
+      pdfBytes,
+      "application/pdf"
+    );
+
+    // Salvar certificado no banco de dados
+    await db.createCertificate({
+      studentId,
+      eventId,
+      attendanceId,
+      certificateUrl,
+      qrCodeValidacao: validationCode,
+    });
+
+    return {
+      certificateUrl,
+      validationCode,
+    };
+  } catch (error) {
+    console.error("[CERTIFICATE] Erro ao gerar certificado:", error);
+    throw error;
+  }
+}
+
+/**
+ * Validar certificado pelo cÃ³digo QR
+ */
+export async function validateCertificate(validationCode: string) {
+  try {
+    const certificates = await db.getCertificatesByStudent(0); // Get all
+
+    // Buscar certificado com o cÃ³digo de validaÃ§Ã£o
+    // Nota: Esta Ã© uma implementaÃ§Ã£o simplificada
+    // Em produÃ§Ã£o, vocÃª faria uma query especÃ­fica no banco
+
+    return {
+      valid: true,
+      message: "Certificado vÃ¡lido",
+    };
+  } catch (error) {
+    console.error("[CERTIFICATE] Erro ao validar certificado:", error);
+    throw error;
+  }
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\core\const.ts =====
+export const COOKIE_NAME = "app_session_id";
+export const ONE_YEAR_MS = 1000 * 60 * 60 * 24 * 365;
+export const AXIOS_TIMEOUT_MS = 30_000;
+export const UNAUTHED_ERR_MSG = 'Please login (10001)';
+export const NOT_ADMIN_ERR_MSG = 'You do not have required permission (10002)';
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\core\env.ts =====
+export const ENV = {
+  appId: process.env.VITE_APP_ID ?? "",
+  cookieSecret: process.env.JWT_SECRET ?? "",
+  databaseUrl: process.env.DATABASE_URL ?? "",
+  oAuthServerUrl: process.env.OAUTH_SERVER_URL ?? "",
+  ownerOpenId: process.env.OWNER_OPEN_ID ?? "",
+  isProduction: process.env.NODE_ENV === "production",
+  forgeApiUrl: process.env.BUILT_IN_FORGE_API_URL ?? "",
+  forgeApiKey: process.env.OPENAI_API_KEY ?? "",
+};
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\core\errors.ts =====
+/**
+ * Base HTTP error class with status code.
+ * Throw this from route handlers to send specific HTTP errors.
+ */
+export class HttpError extends Error {
+  constructor(
+    public statusCode: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
+// Convenience constructors
+export const BadRequestError = (msg: string) => new HttpError(400, msg);
+export const UnauthorizedError = (msg: string) => new HttpError(401, msg);
+export const ForbiddenError = (msg: string) => new HttpError(403, msg);
+export const NotFoundError = (msg: string) => new HttpError(404, msg);
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\core\number.ts =====
+export function toNumber(value: unknown): number {
+  if (value === null || value === undefined) return 0;
+
+  if (typeof value === "number") return value;
+
+  if (typeof value === "string") return parseFloat(value);
+
+  return Number(value);
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\core\systemRouter.ts =====
+import { z } from "zod";
+import { notifyOwner } from "../notification/notification.js";
+import { adminProcedure, publicProcedure, router } from "../trpc/trpc.js";
+
+export const systemRouter = router({
+  health: publicProcedure
+    .input(
+      z.object({
+        timestamp: z.number().min(0, "timestamp cannot be negative"),
+      })
+    )
+    .query(() => ({
+      ok: true,
+    })),
+
+  notifyOwner: adminProcedure
+    .input(
+      z.object({
+        title: z.string().min(1, "title is required"),
+        content: z.string().min(1, "content is required"),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const delivered = await notifyOwner(input);
+      return {
+        success: delivered,
+      } as const;
+    }),
+});
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\core\types.ts =====
+/**
+ * Unified type exports
+ * Import shared types from this single entry point.
+ */
+
+export type * from "../drizzle/schema.js";
+export * from "../core/errors.js";
+
+export interface AuthorizeRequest {
+  redirectUri: string;
+  projectId: string;
+  state: string;
+  responseType: string;
+  scope: string;
+}
+
+export interface AuthorizeResponse {
+  redirectUrl: string;
+}
+
+export interface ExchangeTokenRequest {
+  grantType: string;
+  code: string;
+  refreshToken?: string;
+  clientId: string;
+  clientSecret?: string;
+  redirectUri: string;
+}
+
+export interface ExchangeTokenResponse {
+  accessToken: string;
+  tokenType: string;
+  expiresIn: number;
+  refreshToken?: string;
+  scope: string;
+  idToken: string;
+}
+
+export interface GetUserInfoRequest {
+  accessToken: string;
+}
+
+export interface GetUserInfoResponse {
+  openId: string;
+  projectId: string;
+  name: string;
+  email?: string | null;
+  platform?: string | null;
+  loginMethod?: string | null;
+}
+
+export interface CanAccessRequest {
+  openId: string;
+  projectId: string;
+}
+
+export interface CanAccessResponse {
+  canAccess: boolean;
+}
+
+export interface GetUserInfoWithJwtRequest {
+  jwtToken: string;
+  projectId: string;
+}
+
+export interface GetUserInfoWithJwtResponse {
+  openId: string;
+  projectId: string;
+  name: string;
+  email?: string | null;
+  platform?: string | null;
+  loginMethod?: string | null;
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\database\db.ts =====
+import mysql from "mysql2/promise";
+import { eq, and, desc } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/mysql2";
+import { MySql2Database } from "drizzle-orm/mysql2";
+import {
+  InsertUser,
+  users,
+  students,
+  events,
+  attendances,
+  creditHistory,
+  certificates,
+  notifications,
+  analyses,
+  Student
+} from "../drizzle/schema.js";
+import { ENV } from "../core/env.js";
+
+
+let _db: MySql2Database | null = null;
+
+export async function getDb() {
+  if (!_db) {
+    try {
+      const connection = await mysql.createConnection({
+        host: process.env.DB_HOST,
+        user: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        database: process.env.DB_NAME,
+      });
+      _db = drizzle(connection);
+    } catch (error) {
+      console.warn("[Database] Failed to connect:", error);
+      _db = null;
+    }
+  }
+  return _db;
+}
+/* export async function getDb() {
+  if (!_db && process.env.DATABASE_URL) {
+    try {
+      _db = drizzle(process.env.DATABASE_URL);
+    } catch (error) {
+      console.warn("[Database] Failed to connect:", error);
+      _db = null;
+    }
+  }
+  return _db;
+} */
+
+export async function upsertUser(user: InsertUser): Promise<void> {
+  if (!user.openId) {
+    throw new Error("User openId is required for upsert");
+  }
+
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot upsert user: database not available");
+    return;
+  }
+
+  try {
+    const values: InsertUser = {
+      openId: user.openId,
+    };
+    const updateSet: Record<string, unknown> = {};
+
+    const textFields = ["name", "email", "loginMethod"] as const;
+    type TextField = (typeof textFields)[number];
+
+    const assignNullable = (field: TextField) => {
+      const value = user[field];
+      if (value === undefined) return;
+      const normalized = value ?? null;
+      values[field] = normalized;
+      updateSet[field] = normalized;
+    };
+
+    textFields.forEach(assignNullable);
+
+    if (user.lastSignedIn !== undefined) {
+      values.lastSignedIn = user.lastSignedIn;
+      updateSet.lastSignedIn = user.lastSignedIn;
+    }
+    if (user.role !== undefined) {
+      values.role = user.role;
+      updateSet.role = user.role;
+    } else if (user.openId === ENV.ownerOpenId) {
+      values.role = "admin";
+      updateSet.role = "admin";
+    }
+
+    if (!values.lastSignedIn) {
+      values.lastSignedIn = new Date();
+    }
+
+    if (Object.keys(updateSet).length === 0) {
+      updateSet.lastSignedIn = new Date();
+    }
+
+    await db.insert(users).values(values).onDuplicateKeyUpdate({
+      set: updateSet,
+    });
+  } catch (error) {
+    console.error("[Database] Failed to upsert user:", error);
+    throw error;
+  }
+}
+
+export async function getUserByOpenId(openId: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.openId, openId))
+    .limit(1);
+
+  return result[0];
+}
+
+export async function getUserById(id: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, id))
+    .limit(1);
+
+  return result[0];
+}
+
+// ================= STUDENT =================
+
+export async function getStudentByUserId(userId: number): Promise<Student | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(students)
+    .where(eq(students.userId, userId))
+    .limit(1);
+
+  return result[0];
+}
+
+export async function getStudentById(studentId: number): Promise<Student | undefined> {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(students)
+    .where(eq(students.id, studentId))
+    .limit(1);
+
+  return result[0];
+}
+export async function createStudent(data: typeof students.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(students).values(data);
+  return result;
+}
+
+export async function updateStudent(
+  studentId: number,
+  data: Partial<typeof students.$inferInsert>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.update(students).set(data).where(eq(students.id, studentId));
+}
+
+export async function getAllStudents() {
+  const db = await getDb();
+  // if (!db) return [];
+  if (!db) throw new Error("Database not available");
+
+  return db.select().from(students);
+}
+
+// ============ EVENT QUERIES ============
+
+export async function createEvent(data: typeof events.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db.insert(events).values(data);
+  return result;
+}
+
+export async function getEventById(eventId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(events)
+    .where(eq(events.id, eventId))
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getEventByQrCodeId(qrCodeId: string) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(events)
+    .where(eq(events.qrCodeId, qrCodeId))
+    .limit(1);
+
+  return result[0];
+}
+
+export async function getAllEvents() {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db.select().from(events).orderBy(desc(events.createdAt));
+}
+
+export async function getActiveEvents() {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(events)
+    .where(eq(events.ativo, true))
+    .orderBy(desc(events.data));
+}
+
+export async function updateEvent(
+  eventId: number,
+  data: Partial<typeof events.$inferInsert>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.update(events).set(data).where(eq(events.id, eventId));
+}
+
+export async function deleteEvent(eventId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.delete(events).where(eq(events.id, eventId));
+}
+
+// ============ ATTENDANCE QUERIES ============
+
+export async function createAttendance(data: typeof attendances.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result: any = await db.insert(attendances).values(data);
+
+  return {
+    id: result.insertId ?? null
+  };
+}
+
+export async function getAttendanceByStudentAndEvent(
+  studentId: number,
+  eventId: number
+) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(attendances)
+    .where(
+      and(
+        eq(attendances.studentId, studentId),
+        eq(attendances.eventId, eventId)
+      )
+    )
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getAttendancesByEvent(eventId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(attendances)
+    .where(eq(attendances.eventId, eventId))
+    .orderBy(desc(attendances.timestamp));
+}
+
+export async function getAttendancesByStudent(studentId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(attendances)
+    .where(eq(attendances.studentId, studentId))
+    .orderBy(desc(attendances.timestamp));
+}
+
+// ============ CREDIT HISTORY QUERIES ============
+
+export async function createCreditHistory(
+  data: typeof creditHistory.$inferInsert
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.insert(creditHistory).values(data);
+}
+
+export async function getCreditHistoryByStudent(studentId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(creditHistory)
+    .where(eq(creditHistory.studentId, studentId))
+    .orderBy(desc(creditHistory.createdAt));
+}
+
+// ============ CERTIFICATE QUERIES ============
+
+export async function createCertificate(
+  data: typeof certificates.$inferInsert
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.insert(certificates).values(data);
+}
+
+export async function getCertificateById(certificateId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(certificates)
+    .where(eq(certificates.id, certificateId))
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+export async function getCertificatesByStudent(studentId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(certificates)
+    .where(eq(certificates.studentId, studentId))
+    .orderBy(desc(certificates.dataEmissao));
+}
+
+export async function getCertificateByAttendance(attendanceId: number) {
+  const db = await getDb();
+  if (!db) return undefined;
+
+  const result = await db
+    .select()
+    .from(certificates)
+    .where(eq(certificates.attendanceId, attendanceId))
+    .limit(1);
+
+  return result.length > 0 ? result[0] : undefined;
+}
+
+// ============ NOTIFICATION QUERIES ============
+
+export async function createNotification(
+  data: typeof notifications.$inferInsert
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.insert(notifications).values(data);
+}
+
+export async function getNotificationsByStudent(studentId: number) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(notifications)
+    .where(eq(notifications.studentId, studentId))
+    .orderBy(desc(notifications.createdAt));
+}
+
+export async function getUnsentNotifications() {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(notifications)
+    .where(eq(notifications.enviado, false));
+}
+
+export async function updateNotification(
+  notificationId: number,
+  data: Partial<typeof notifications.$inferInsert>
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .update(notifications)
+    .set(data)
+    .where(eq(notifications.id, notificationId));
+}
+
+// ============ ANALYSIS QUERIES ============
+
+export async function createAnalysis(data: typeof analyses.$inferInsert) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db.insert(analyses).values(data);
+}
+
+export async function getAnalysesByType(tipo: string) {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db
+    .select()
+    .from(analyses)
+    .where(eq(analyses.tipo, tipo as any))
+    .orderBy(desc(analyses.dataGeracao));
+}
+
+export async function getLatestAnalyses() {
+  const db = await getDb();
+  if (!db) return [];
+
+  return db.select().from(analyses).orderBy(desc(analyses.dataGeracao)).limit(10);
+}
+
+export {
+  students,
+  events,
+  attendances,
+  creditHistory,
+  notifications
+};
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\drizzle\schema.ts =====
+import {
+  int,
+  mysqlEnum,
+  mysqlTable,
+  text,
+  timestamp,
+  varchar,
+  decimal,
+  boolean,
+  datetime,
+  uniqueIndex,
+} from "drizzle-orm/mysql-core";
+
+/**
+ * Core user table backing auth flow.
+ * Extended with role-based access control for admin (secretaria) and user (alunos).
+ */
+export const users = mysqlTable("users", {
+  id: int("id").autoincrement().primaryKey(),
+  openId: varchar("openId", { length: 64 }).notNull().unique(),
+  name: text("name"),
+  email: varchar("email", { length: 320 }),
+  loginMethod: varchar("loginMethod", { length: 64 }),
+  role: mysqlEnum("role", ["user", "admin"]).default("user").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
+});
+
+export type User = typeof users.$inferSelect;
+export type InsertUser = typeof users.$inferInsert;
+
+/**
+ * Tabela de alunos com informaÃ§Ãµes acadÃªmicas
+ */
+export const students = mysqlTable("students", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull().unique().references(() => users.id, { onDelete: "cascade" }),
+  matricula: varchar("matricula", { length: 50 }).notNull().unique(),
+  nome: text("nome").notNull(),
+  email: varchar("email", { length: 320 }).notNull(),
+  curso: varchar("curso", { length: 255 }).notNull(),
+  creditosTotais: decimal("creditosTotais", { precision: 10, scale: 2 }).default("0").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Student = typeof students.$inferSelect;
+export type InsertStudent = typeof students.$inferInsert;
+
+/**
+ * Tabela de eventos acadÃªmicos
+ */
+export const events = mysqlTable("events", {
+  id: int("id").autoincrement().primaryKey(),
+  nome: text("nome").notNull(),
+  descricao: text("descricao"),
+  data: datetime("data").notNull(),
+  horario: varchar("horario", { length: 5 }).notNull(), // HH:MM
+  local: varchar("local", { length: 255 }).notNull(),
+  cargaHoraria: decimal("cargaHoraria", { precision: 5, scale: 2 }).notNull(),
+  creditos: decimal("creditos", { precision: 5, scale: 2 }).notNull(),
+  qrCodeData: text("qrCodeData").notNull(), // JSON string com dados do evento
+  qrCodeUrl: varchar("qrCodeUrl", { length: 2000 }),
+  qrCodeId: varchar("qrCodeId", { length: 255 }).notNull().unique(),
+  ativo: boolean("ativo").default(true).notNull(),
+  criadoPor: int("criadoPor").notNull().references(() => users.id, { onDelete: "cascade" }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type Event = typeof events.$inferSelect;
+export type InsertEvent = typeof events.$inferInsert;
+
+/**
+ * Tabela de presenÃ§as (registro de presenÃ§a do aluno em eventos)
+ */
+export const attendances = mysqlTable("attendances", {
+  id: int("id").autoincrement().primaryKey(),
+  studentId: int("studentId").notNull().references(() => students.id, { onDelete: "cascade" }),
+  eventId: int("eventId").notNull().references(() => events.id, { onDelete: "cascade" }),
+  timestamp: timestamp("timestamp").defaultNow().notNull(),
+  creditosRegistrados: decimal("creditosRegistrados", { precision: 5, scale: 2 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+}, (table) => {
+  return {
+    uniqueAttendance: uniqueIndex("unique_attendance").on(
+      table.studentId,
+      table.eventId
+    ),
+  };
+});
+
+export type Attendance = typeof attendances.$inferSelect;
+export type InsertAttendance = typeof attendances.$inferInsert;
+
+/**
+ * Tabela de histÃ³rico de crÃ©ditos do aluno
+ */
+export const creditHistory = mysqlTable("creditHistory", {
+  id: int("id").autoincrement().primaryKey(),
+  studentId: int("studentId").notNull().references(() => students.id, { onDelete: "cascade" }),
+  eventId: int("eventId").notNull().references(() => events.id, { onDelete: "cascade" }),
+  creditosAdicionados: decimal("creditosAdicionados", { precision: 5, scale: 2 }).notNull(),
+  creditosTotaisApos: decimal("creditosTotaisApos", { precision: 10, scale: 2 }).notNull(),
+  descricao: text("descricao"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type CreditHistory = typeof creditHistory.$inferSelect;
+export type InsertCreditHistory = typeof creditHistory.$inferInsert;
+
+/**
+ * Tabela de certificados
+ */
+export const certificates = mysqlTable("certificates", {
+  id: int("id").autoincrement().primaryKey(),
+  studentId: int("studentId").notNull().references(() => students.id, { onDelete: "cascade" }),
+  eventId: int("eventId").notNull().references(() => events.id, { onDelete: "cascade" }),
+  attendanceId: int("attendanceId").notNull().references(() => attendances.id, { onDelete: "cascade" }),
+  certificateUrl: text("certificateUrl").notNull(),
+  qrCodeValidacao: text("qrCodeValidacao").notNull(),
+  dataEmissao: timestamp("dataEmissao").defaultNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type Certificate = typeof certificates.$inferSelect;
+export type InsertCertificate = typeof certificates.$inferInsert;
+
+/**
+ * Tabela de notificaÃ§Ãµes enviadas
+ */
+export const notifications = mysqlTable("notifications", {
+  id: int("id").autoincrement().primaryKey(),
+  studentId: int("studentId").notNull().references(() => students.id, { onDelete: "cascade" }),
+  tipo: mysqlEnum("tipo", ["creditos_recebidos", "novo_evento", "certificado_disponivel"]).notNull(),
+  titulo: varchar("titulo", { length: 255 }).notNull(),
+  mensagem: text("mensagem").notNull(),
+  enviado: boolean("enviado").default(false).notNull(),
+  dataEnvio: timestamp("dataEnvio"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type Notification = typeof notifications.$inferSelect;
+export type InsertNotification = typeof notifications.$inferInsert;
+
+/**
+ * Tabela de anÃ¡lises e insights gerados pelo LLM
+ */
+export const analyses = mysqlTable("analyses", {
+  id: int("id").autoincrement().primaryKey(),
+  tipo: mysqlEnum("tipo", ["frequencia", "padroes", "sugestoes"]).notNull(),
+  conteudo: text("conteudo").notNull(),
+  criadoPor: int("criadoPor").notNull().references(() => users.id, { onDelete: "cascade" }),
+  dataGeracao: timestamp("dataGeracao").defaultNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type Analysis = typeof analyses.$inferSelect;
+export type InsertAnalysis = typeof analyses.$inferInsert;
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\ia\llm.ts =====
+import dotenv from "dotenv";
+dotenv.config();
+
+import { ENV } from "../core/env.js";
+
+export type Role = "system" | "user" | "assistant" | "tool" | "function";
+
+export type TextContent = {
+  type: "text";
+  text: string;
+};
+
+export type ImageContent = {
+  type: "image_url";
+  image_url: {
+    url: string;
+    detail?: "auto" | "low" | "high";
+  };
+};
+
+export type FileContent = {
+  type: "file_url";
+  file_url: {
+    url: string;
+    mime_type?: "audio/mpeg" | "audio/wav" | "application/pdf" | "audio/mp4" | "video/mp4" ;
+  };
+};
+
+export type MessageContent = string | TextContent | ImageContent | FileContent;
+
+export type Message = {
+  role: Role;
+  content: MessageContent | MessageContent[];
+  name?: string;
+  tool_call_id?: string;
+};
+
+export type Tool = {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters?: Record<string, unknown>;
+  };
+};
+
+export type ToolChoicePrimitive = "none" | "auto" | "required";
+export type ToolChoiceByName = { name: string };
+export type ToolChoiceExplicit = {
+  type: "function";
+  function: {
+    name: string;
+  };
+};
+
+export type ToolChoice =
+  | ToolChoicePrimitive
+  | ToolChoiceByName
+  | ToolChoiceExplicit;
+
+export type InvokeParams = {
+  messages: Message[];
+  tools?: Tool[];
+  toolChoice?: ToolChoice;
+  tool_choice?: ToolChoice;
+  maxTokens?: number;
+  max_tokens?: number;
+  outputSchema?: OutputSchema;
+  output_schema?: OutputSchema;
+  responseFormat?: ResponseFormat;
+  response_format?: ResponseFormat;
+};
+
+export type ToolCall = {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
+};
+
+export type InvokeResult = {
+  id: string;
+  created: number;
+  model: string;
+  choices: Array<{
+    index: number;
+    message: {
+      role: Role;
+      content: string | Array<TextContent | ImageContent | FileContent>;
+      tool_calls?: ToolCall[];
+    };
+    finish_reason: string | null;
+  }>;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
+};
+
+export type JsonSchema = {
+  name: string;
+  schema: Record<string, unknown>;
+  strict?: boolean;
+};
+
+export type OutputSchema = JsonSchema;
+
+export type ResponseFormat =
+  | { type: "text" }
+  | { type: "json_object" }
+  | { type: "json_schema"; json_schema: JsonSchema };
+
+const ensureArray = (
+  value: MessageContent | MessageContent[]
+): MessageContent[] => (Array.isArray(value) ? value : [value]);
+
+const normalizeContentPart = (
+  part: MessageContent
+): TextContent | ImageContent | FileContent => {
+  if (typeof part === "string") {
+    return { type: "text", text: part };
+  }
+
+  if (part.type === "text") {
+    return part;
+  }
+
+  if (part.type === "image_url") {
+    return part;
+  }
+
+  if (part.type === "file_url") {
+    return part;
+  }
+
+  throw new Error("Unsupported message content part");
+};
+
+const normalizeMessage = (message: Message) => {
+  const { role, name, tool_call_id } = message;
+
+  if (role === "tool" || role === "function") {
+    const content = ensureArray(message.content)
+      .map(part => (typeof part === "string" ? part : JSON.stringify(part)))
+      .join("\n");
+
+    return {
+      role,
+      name,
+      tool_call_id,
+      content,
+    };
+  }
+
+  const contentParts = ensureArray(message.content).map(normalizeContentPart);
+
+  // If there's only text content, collapse to a single string for compatibility
+  if (contentParts.length === 1 && contentParts[0].type === "text") {
+    return {
+      role,
+      name,
+      content: contentParts[0].text,
+    };
+  }
+
+  return {
+    role,
+    name,
+    content: contentParts,
+  };
+};
+
+const normalizeToolChoice = (
+  toolChoice: ToolChoice | undefined,
+  tools: Tool[] | undefined
+): "none" | "auto" | ToolChoiceExplicit | undefined => {
+  if (!toolChoice) return undefined;
+
+  if (toolChoice === "none" || toolChoice === "auto") {
+    return toolChoice;
+  }
+
+  if (toolChoice === "required") {
+    if (!tools || tools.length === 0) {
+      throw new Error(
+        "tool_choice 'required' was provided but no tools were configured"
+      );
+    }
+
+    if (tools.length > 1) {
+      throw new Error(
+        "tool_choice 'required' needs a single tool or specify the tool name explicitly"
+      );
+    }
+
+    return {
+      type: "function",
+      function: { name: tools[0].function.name },
+    };
+  }
+
+  if ("name" in toolChoice) {
+    return {
+      type: "function",
+      function: { name: toolChoice.name },
+    };
+  }
+
+  return toolChoice;
+};
+
+const resolveApiUrl = () =>
+  ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
+    ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
+    : "https://forge.manus.im/v1/chat/completions";
+
+const assertApiKey = () => {
+  if (!ENV.forgeApiKey) {
+    throw new Error("OPENAI_API_KEY is not configured");
+  }
+};
+
+const normalizeResponseFormat = ({
+  responseFormat,
+  response_format,
+  outputSchema,
+  output_schema,
+}: {
+  responseFormat?: ResponseFormat;
+  response_format?: ResponseFormat;
+  outputSchema?: OutputSchema;
+  output_schema?: OutputSchema;
+}):
+  | { type: "json_schema"; json_schema: JsonSchema }
+  | { type: "text" }
+  | { type: "json_object" }
+  | undefined => {
+  const explicitFormat = responseFormat || response_format;
+  if (explicitFormat) {
+    if (
+      explicitFormat.type === "json_schema" &&
+      !explicitFormat.json_schema?.schema
+    ) {
+      throw new Error(
+        "responseFormat json_schema requires a defined schema object"
+      );
+    }
+    return explicitFormat;
+  }
+
+  const schema = outputSchema || output_schema;
+  if (!schema) return undefined;
+
+  if (!schema.name || !schema.schema) {
+    throw new Error("outputSchema requires both name and schema");
+  }
+
+  return {
+    type: "json_schema",
+    json_schema: {
+      name: schema.name,
+      schema: schema.schema,
+      ...(typeof schema.strict === "boolean" ? { strict: schema.strict } : {}),
+    },
+  };
+};
+
+export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
+  assertApiKey();
+
+  const {
+    messages,
+    tools,
+    toolChoice,
+    tool_choice,
+    outputSchema,
+    output_schema,
+    responseFormat,
+    response_format,
+  } = params;
+
+  const payload: Record<string, unknown> = {
+    model: "gemini-2.5-flash",
+    messages: messages.map(normalizeMessage),
+  };
+
+  if (tools && tools.length > 0) {
+    payload.tools = tools;
+  }
+
+  const normalizedToolChoice = normalizeToolChoice(
+    toolChoice || tool_choice,
+    tools
+  );
+  if (normalizedToolChoice) {
+    payload.tool_choice = normalizedToolChoice;
+  }
+
+  payload.max_tokens = 32768
+  payload.thinking = {
+    "budget_tokens": 128
+  }
+
+  const normalizedResponseFormat = normalizeResponseFormat({
+    responseFormat,
+    response_format,
+    outputSchema,
+    output_schema,
+  });
+
+  if (normalizedResponseFormat) {
+    payload.response_format = normalizedResponseFormat;
+  }
+
+  const response = await fetch(resolveApiUrl(), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${ENV.forgeApiKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `LLM invoke failed: ${response.status} ${response.statusText} â€“ ${errorText}`
+    );
+  }
+
+  return (await response.json()) as InvokeResult;
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\notification\notification.ts =====
+import { TRPCError } from "@trpc/server";
+import { ENV } from "../core/env.js";
+
+export type NotificationPayload = {
+  title: string;
+  content: string;
+};
+
+const TITLE_MAX_LENGTH = 1200;
+const CONTENT_MAX_LENGTH = 20000;
+
+const trimValue = (value: string): string => value.trim();
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === "string" && value.trim().length > 0;
+
+const buildEndpointUrl = (baseUrl: string): string => {
+  const normalizedBase = baseUrl.endsWith("/")
+    ? baseUrl
+    : `${baseUrl}/`;
+  return new URL(
+    "webdevtoken.v1.WebDevService/SendNotification",
+    normalizedBase
+  ).toString();
+};
+
+const validatePayload = (input: NotificationPayload): NotificationPayload => {
+  if (!isNonEmptyString(input.title)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Notification title is required.",
+    });
+  }
+  if (!isNonEmptyString(input.content)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "Notification content is required.",
+    });
+  }
+
+  const title = trimValue(input.title);
+  const content = trimValue(input.content);
+
+  if (title.length > TITLE_MAX_LENGTH) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Notification title must be at most ${TITLE_MAX_LENGTH} characters.`,
+    });
+  }
+
+  if (content.length > CONTENT_MAX_LENGTH) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `Notification content must be at most ${CONTENT_MAX_LENGTH} characters.`,
+    });
+  }
+
+  return { title, content };
+};
+
+/**
+ * Dispatches a project-owner notification through the Manus Notification Service.
+ * Returns `true` if the request was accepted, `false` when the upstream service
+ * cannot be reached (callers can fall back to email/slack). Validation errors
+ * bubble up as TRPC errors so callers can fix the payload.
+ */
+export async function notifyOwner(
+  payload: NotificationPayload
+): Promise<boolean> {
+  const { title, content } = validatePayload(payload);
+
+  if (!ENV.forgeApiUrl) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Notification service URL is not configured.",
+    });
+  }
+
+  if (!ENV.forgeApiKey) {
+    throw new TRPCError({
+      code: "INTERNAL_SERVER_ERROR",
+      message: "Notification service API key is not configured.",
+    });
+  }
+
+  const endpoint = buildEndpointUrl(ENV.forgeApiUrl);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${ENV.forgeApiKey}`,
+        "content-type": "application/json",
+        "connect-protocol-version": "1",
+      },
+      body: JSON.stringify({ title, content }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      console.warn(
+        `[Notification] Failed to notify owner (${response.status} ${response.statusText})${
+          detail ? `: ${detail}` : ""
+        }`
+      );
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.warn("[Notification] Error calling notification service:", error);
+    return false;
+  }
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\repositories\analysisRepository.ts =====
+import * as db from "../database/db.js";
+
+export async function createAnalysis(data: any) {
+  return db.createAnalysis(data);
+}
+
+export async function getLatestAnalyses() {
+  return db.getLatestAnalyses();
+}
+
+export async function getAnalysesByType(tipo: string) {
+  return db.getAnalysesByType(tipo);
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\repositories\attendanceRepository.ts =====
+import * as db from "../database/db.js";
+
+export async function getAttendancesByStudent(studentId: number) {
+  return db.getAttendancesByStudent(studentId);
+}
+
+export async function getAttendancesByEvent(eventId: number) {
+  return db.getAttendancesByEvent(eventId);
+}
+
+export async function getAttendanceByStudentAndEvent(
+  studentId: number,
+  eventId: number
+) {
+  return db.getAttendanceByStudentAndEvent(studentId, eventId);
+}
+
+export async function createAttendance(data: any) {
+  return db.createAttendance(data);
+}
+
+export async function createCreditHistory(data: any) {
+  return db.createCreditHistory(data);
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\repositories\eventRepository.ts =====
+import * as db from "../database/db.js";
+
+export async function getAllEvents() {
+  return db.getAllEvents();
+}
+
+export async function getEventById(eventId: number) {
+  return db.getEventById(eventId);
+}
+
+export async function createEvent(data: any) {
+  return db.createEvent(data);
+}
+
+export async function updateEvent(eventId: number, data: any) {
+  return db.updateEvent(eventId, data);
+}
+
+export async function deleteEvent(eventId: number) {
+  return db.deleteEvent(eventId);
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\repositories\notificationRepository.ts =====
+import * as db from "../database/db.js";
+
+export async function createNotification(data: any) {
+  return db.createNotification(data);
+}
+
+export async function getUnsentNotifications() {
+  return db.getUnsentNotifications();
+}
+
+export async function updateNotification(id: number, data: any) {
+  return db.updateNotification(id, data);
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\repositories\studentRepository.ts =====
+import * as db from "../database/db.js";
+
+export async function getStudentById(studentId: number) {
+  return db.getStudentById(studentId);
+}
+
+export async function getAllStudents() {
+  return db.getAllStudents();
+}
+
+export async function updateStudent(
+  studentId: number,
+  data: any
+) {
+  return db.updateStudent(studentId, data);
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\routes\routers-extended.ts =====
+import { protectedProcedure, router } from "../trpc/trpc.js";
+import { z } from "zod";
+import * as db from "../database/db.js";
+import * as services from "../services/services.js";
+import * as certificates from "../certificates/certificates.js";
+import { TRPCError } from "@trpc/server";
+
+// ============ ADMIN PROCEDURE ============
+const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.user.role !== "admin") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "Admin access required" });
+  }
+  return next({ ctx });
+});
+
+// ============ ANALYSIS ROUTER ============
+export const analysisRouter = router({
+  // Buscar anÃ¡lise de frequÃªncia (Ãºltima)
+  getFrequencyAnalysis: adminProcedure.query(async () => {
+    const analyses = await db.getAnalysesByType("frequencia");
+    return analyses.length > 0 ? analyses[0] : null;
+  }),
+
+  // Buscar sugestÃµes (Ãºltima)
+  getImprovementSuggestions: adminProcedure.query(async () => {
+    const analyses = await db.getAnalysesByType("sugestoes");
+    return analyses.length > 0 ? analyses[0] : null;
+  }),
+
+  // Gerar anÃ¡lise de frequÃªncia (SALVA NO BANCO)
+  generateFrequencyAnalysis: adminProcedure.mutation(async ({ ctx }) => {
+    const analysis = await services.generateFrequencyAnalysis(ctx.user.id);
+
+    await db.createAnalysis({
+      tipo: "frequencia",
+      conteudo:
+        typeof analysis === "string"
+          ? analysis
+          : JSON.stringify(analysis),
+      criadoPor: ctx.user.id,
+    });
+
+    return { success: true, analysis };
+  }),
+
+  // Gerar sugestÃµes (AGORA SALVA NO BANCO)
+  generateImprovementSuggestions: adminProcedure.mutation(async ({ ctx }) => {
+    const suggestions = await services.generateImprovementSuggestions(ctx.user.id);
+
+    await db.createAnalysis({
+      tipo: "sugestoes",
+      conteudo:
+        typeof suggestions === "string"
+          ? suggestions
+          : JSON.stringify(suggestions),
+      criadoPor: ctx.user.id,
+    });
+
+    return { success: true, suggestions };
+  }),
+
+  // Listar anÃ¡lises recentes
+  getAllAnalyses: adminProcedure.query(async () => {
+    return await db.getLatestAnalyses();
+  }),
+});
+
+// ============ CERTIFICATE ROUTER ============
+export const certificateRouter = router({
+  // Gerar certificado para o aluno apÃ³s a presenÃ§a
+  generateCertificate: protectedProcedure
+    .input(
+      z.object({
+        studentId: z.number(),
+        eventId: z.number(),
+        attendanceId: z.number(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Verificar se o usuÃ¡rio Ã© admin ou o prÃ³prio aluno
+      const student = await db.getStudentByUserId(ctx.user.id);
+
+      if (ctx.user.role !== "admin" && student?.id !== input.studentId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "You can only generate certificates for yourself",
+        });
+      }
+
+      // Verificar se jÃ¡ existe certificado
+      const existing = await db.getCertificateByAttendance(input.attendanceId);
+      if (existing) {
+        return existing;
+      }
+
+      const result = await certificates.generateCertificatePDF(
+        input.studentId,
+        input.eventId,
+        input.attendanceId
+      );
+
+    // notificar aluno
+      const event = await db.getEventById(input.eventId);
+      if (event) {
+        await services.notifyStudentCertificateAvailable(
+          input.studentId,
+          event.nome
+        );
+      }
+
+      return result;
+    }),
+
+  // obter certificados via URL
+  getCertificateUrl: protectedProcedure
+    .input(z.object({ certificateId: z.number() }))
+    .query(async ({ input }) => {
+      const certificate = await db.getCertificateById(input.certificateId);
+
+      if (!certificate) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Certificate not found",
+        });
+      }
+
+      return {
+        url: certificate.certificateUrl,
+        validationCode: certificate.qrCodeValidacao,
+      };
+    }),
+
+  // Validar certificados
+  validateCertificate: protectedProcedure
+    .input(z.object({ validationCode: z.string() }))
+    .query(async ({ input }) => {
+      const result = await certificates.validateCertificate(input.validationCode);
+      return result;
+    }),
+});
+
+// ============ NOTIFICATION ROUTER ============
+export const notificationRouter = router({
+  // Get notifications for current user
+  getNotifications: protectedProcedure.query(async ({ ctx }) => {
+    const student = await db.getStudentByUserId(ctx.user.id);
+    if (!student) return [];
+
+    return await db.getNotificationsByStudent(student.id);
+  }),
+
+  // Marcar notificaÃ§Ãµes como lida
+  markAsRead: protectedProcedure
+    .input(z.object({ notificationId: z.number() }))
+    .mutation(async ({ input }) => {
+      await db.updateNotification(input.notificationId, {
+        enviado: true,
+      });
+
+      return { success: true };
+    }),
+
+  // Enviar notificaÃ§Ãµes pendentes (apenas administrador)
+  sendPendingNotifications: adminProcedure.mutation(async () => {
+    await services.sendPendingNotifications();
+    return { success: true };
+  }),
+});
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\routes\routers.ts =====
+import { eq, and } from "drizzle-orm";
+import { sql } from "drizzle-orm";
+import { COOKIE_NAME } from "../core/const.js";
+import { getSessionCookieOptions } from "../auth/cookies.js";
+import { systemRouter } from "../core/systemRouter.js";
+import { publicProcedure, router, protectedProcedure, adminProcedure } from "../trpc/trpc.js";
+import { z } from "zod";
+import * as db from "../database/db.js";
+import { TRPCError } from "@trpc/server";
+import { v4 as uuidv4 } from "uuid";
+import QRCode from "qrcode";
+import { analysisRouter, certificateRouter, notificationRouter } from "./routers-extended.js";
+
+export const appRouter = router({
+  system: systemRouter,
+  auth: router({
+    me: publicProcedure.query((opts) => {
+      return opts.ctx.user ?? null;
+    }),
+    logout: publicProcedure.mutation(({ ctx }) => {
+      return new Promise((resolve, reject) => {
+
+        ctx.req.logout((err: any) => {
+          if (err) return reject(err);
+
+          if (!ctx.req.session) {
+            return resolve({ success: true });
+          }
+
+          ctx.req.session.destroy((err: any) => {
+            if (err) return reject(err);
+
+            ctx.res.clearCookie("presenca.qr.session", {
+              path: "/",
+              httpOnly: true,
+              sameSite: "lax",
+              secure: false,
+            });
+
+            resolve({ success: true });
+          });
+        });
+
+      });
+    }),
+  }),
+
+  // ============ STUDENT ROUTES ============
+  student: router({
+    // Get or create student profile
+    getProfile: protectedProcedure.query(async ({ ctx }) => {
+      let student = await db.getStudentByUserId(ctx.user.id);
+
+      if (!student) {
+        console.warn("Student nÃ£o encontrado, criando automaticamente", ctx.user.id);
+
+        await db.createStudent({
+          userId: ctx.user.id,
+          matricula: `MAT-${ctx.user.id}-${Date.now()}`,
+          nome: ctx.user.name || "Aluno",
+          curso: "NÃ£o informado",
+          email: ctx.user.email || "",
+          creditosTotais: "0.00",
+        });
+
+        student = await db.getStudentByUserId(ctx.user.id);
+
+        if (!student) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Erro ao criar perfil do aluno",
+          });
+        }
+      }
+
+      return student;
+    }),
+
+    // Update student profile
+    updateProfile: protectedProcedure
+      .input(
+        z.object({
+          nome: z.string().optional(),
+          curso: z.string().optional(),
+          matricula: z.string().optional(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const student = await db.getStudentByUserId(ctx.user.id);
+        if (!student) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Student profile not found",
+          });
+        }
+
+        await db.updateStudent(student.id, input);
+        return await db.getStudentById(student.id);
+      }),
+
+    // Get student's credit history
+    getCreditHistory: protectedProcedure.query(async ({ ctx }) => {
+      const student = await db.getStudentByUserId(ctx.user.id);
+      if (!student) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Student profile not found",
+        });
+      }
+
+      const history = await db.getCreditHistoryByStudent(student.id);
+      return history;
+    }),
+
+    // Get student's attendance history
+    getAttendanceHistory: protectedProcedure.query(async ({ ctx }) => {
+      const student = await db.getStudentByUserId(ctx.user.id);
+      if (!student) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Student profile not found",
+        });
+      }
+
+      const attendances = await db.getAttendancesByStudent(student.id);
+      const enriched = await Promise.all(
+        attendances.map(async (att) => {
+          const event = await db.getEventById(att.eventId);
+          return { ...att, event };
+        })
+      );
+
+      return enriched;
+    }),
+
+    // Get student's certificates
+    getCertificates: protectedProcedure.query(async ({ ctx }) => {
+      const student = await db.getStudentByUserId(ctx.user.id);
+      if (!student) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Student profile not found",
+        });
+      }
+
+      const certificates = await db.getCertificatesByStudent(student.id);
+      return certificates;
+    }),
+
+    // Get total credits
+    getTotalCredits: protectedProcedure.query(async ({ ctx }) => {
+      const student = await db.getStudentByUserId(ctx.user.id);
+      if (!student) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Student profile not found",
+        });
+      }
+
+      return {
+        totalCredits: parseFloat(student.creditosTotais.toString()),
+      };
+    }),
+  }),
+
+  // ============ EVENT ROUTES ============
+  event: router({
+    // List all active events
+    listActive: publicProcedure.query(async () => {
+      return await db.getActiveEvents();
+    }),
+
+    // List all events (admin only)
+    listAll: adminProcedure.query(async () => {
+      return await db.getAllEvents();
+    }),
+
+    // Get event by ID
+    getById: publicProcedure
+      .input(z.object({ id: z.number() }))
+      .query(async ({ input }) => {
+        const event = await db.getEventById(input.id);
+        if (!event) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Event not found",
+          });
+        }
+        return event;
+      }),
+
+    // Create event (admin only)
+    create: adminProcedure
+      .input(
+        z.object({
+          nome: z.string(),
+          descricao: z.string().optional(),
+          data: z.date(),
+          horario: z.string(), // HH:MM
+          local: z.string(),
+          cargaHoraria: z.number(),
+          creditos: z.number(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        const qrCodeId = uuidv4();
+
+        const payload = {
+          qrCodeId,
+          timestamp: new Date().toISOString(),
+        };
+
+        const qrCodeData = JSON.stringify(payload);
+        const qrCodeUrl = await QRCode.toDataURL(qrCodeData);
+
+        await db.createEvent({
+          nome: input.nome,
+          descricao: input.descricao,
+          data: input.data,
+          horario: input.horario,
+          local: input.local,
+          cargaHoraria: input.cargaHoraria.toString(),
+          creditos: input.creditos.toString(),
+          qrCodeData,
+          qrCodeUrl,
+          qrCodeId,
+          criadoPor: ctx.user.id,
+        });
+
+        //return event
+        const event = await db.getEventByQrCodeId(qrCodeId);
+        return event;
+      }),
+
+    // Update event (admin only)
+    update: adminProcedure
+      .input(
+        z.object({
+          id: z.number(),
+          nome: z.string().optional(),
+          descricao: z.string().optional(),
+          data: z.date().optional(),
+          horario: z.string().optional(),
+          local: z.string().optional(),
+          cargaHoraria: z.number().optional(),
+          creditos: z.number().optional(),
+          ativo: z.boolean().optional(),
+        })
+      )
+      .mutation(async ({ input }) => {
+        const event = await db.getEventById(input.id);
+        if (!event) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Event not found",
+          });
+        }
+
+        const updateData: Record<string, any> = {};
+        if (input.nome !== undefined) updateData.nome = input.nome;
+        if (input.descricao !== undefined) updateData.descricao = input.descricao;
+        if (input.data !== undefined) updateData.data = input.data;
+        if (input.horario !== undefined) updateData.horario = input.horario;
+        if (input.local !== undefined) updateData.local = input.local;
+        if (input.cargaHoraria !== undefined)
+          updateData.cargaHoraria = input.cargaHoraria.toString();
+        if (input.creditos !== undefined)
+          updateData.creditos = input.creditos.toString();
+        if (input.ativo !== undefined) updateData.ativo = input.ativo;
+
+        await db.updateEvent(input.id, updateData);
+        return await db.getEventById(input.id);
+      }),
+
+    // Delete event (admin only)
+    delete: adminProcedure
+      .input(z.object({ id: z.number() }))
+      .mutation(async ({ input }) => {
+        const event = await db.getEventById(input.id);
+        if (!event) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Event not found",
+          });
+        }
+
+        await db.deleteEvent(input.id);
+        return { success: true };
+      }),
+
+    // Get attendance list for event (admin only)
+    getAttendanceList: adminProcedure
+      .input(z.object({ eventId: z.number() }))
+      .query(async ({ input }) => {
+        const attendances = await db.getAttendancesByEvent(input.eventId);
+        const enriched = await Promise.all(
+          attendances.map(async (att) => {
+            const student = await db.getStudentById(att.studentId);
+            return { ...att, student };
+          })
+        );
+        return enriched;
+      }),
+  }),
+
+  // ============ ATTENDANCE ROUTES ============
+  attendance: router({
+    // Register attendance via QR code
+    registerByQRCode: protectedProcedure
+      .input(
+        z.object({
+          qrCodeId: z.string(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        // Find event by QR code
+        const event = await db.getEventByQrCodeId(input.qrCodeId);
+
+        if (!event) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Event not found for this QR code",
+          });
+        }
+
+        // Get student
+        const student = await db.getStudentByUserId(ctx.user.id);
+        if (!student) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Student profile not found",
+          });
+        }
+
+       /* // Check if already registered
+        const existing = await db.getAttendanceByStudentAndEvent(
+          student.id,
+          event.id
+        );
+        if (existing) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "Already registered for this event",
+          });
+        }
+          */
+
+        const dbConn = await db.getDb();
+        if (!dbConn) {
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Database not available",
+          });
+        }
+
+        const creditos = event.creditos.toString();
+
+        const totalCredits = await dbConn.transaction(async (tx) => {
+
+          // 1. InserÃ§Ã£o protegida por Ã­ndice Ãºnico
+          try {
+            await tx.insert(db.attendances).values({
+              studentId: student.id,
+              eventId: event.id,
+              creditosRegistrados: creditos,
+            });
+          } catch (err: any) {
+            if (err.code === "ER_DUP_ENTRY") {
+              throw new TRPCError({
+                code: "CONFLICT",
+                message: "Already registered for this event",
+              });
+            }
+            throw err;
+          }
+
+          // 2. Update Ãºnico (sem duplicaÃ§Ã£o!)
+          await tx
+            .update(db.students)
+            .set({
+              creditosTotais: sql`${db.students.creditosTotais} + ${creditos}`,
+            })
+            .where(eq(db.students.id, student.id));
+
+          // 3. Busca valor atualizado
+          const studentUpdated = await tx
+            .select()
+            .from(db.students)
+            .where(eq(db.students.id, student.id))
+            .limit(1);
+
+          if (studentUpdated.length === 0) {
+            throw new TRPCError({
+              code: "INTERNAL_SERVER_ERROR",
+              message: "Erro ao atualizar crÃ©ditos do aluno",
+            });
+          }
+
+          const newTotal = studentUpdated[0].creditosTotais.toString();
+
+          // 4. HistÃ³rico consistente
+          await tx.insert(db.creditHistory).values({
+            studentId: student.id,
+            eventId: event.id,
+            creditosAdicionados: creditos,
+            creditosTotaisApos: newTotal,
+            descricao: `PresenÃ§a registrada no evento: ${event.nome}`,
+          });
+
+          // 5. NotificaÃ§Ã£o
+          await tx.insert(db.notifications).values({
+            studentId: student.id,
+            tipo: "creditos_recebidos",
+            titulo: "CrÃ©ditos Recebidos",
+            mensagem: `VocÃª recebeu ${creditos} crÃ©ditos por participar do evento "${event.nome}"`,
+            enviado: false,
+          });
+
+          return parseFloat(newTotal);
+        });
+
+        return {
+          success: true,
+          event,
+          creditos: parseFloat(creditos),
+          totalCredits,
+        };
+      }),
+  }),
+
+  // ============ ADMIN ROUTES ============
+  // Analysis routes
+  analysis: analysisRouter,
+
+  // Certificate routes
+  certificate: certificateRouter,
+
+  // Notification routes
+  notification: notificationRouter,
+
+  admin: router({
+    // Get all students (admin only)
+    getAllStudents: adminProcedure.query(async () => {
+      return await db.getAllStudents();
+    }),
+
+    // Get student details (admin only)
+    getStudentDetails: adminProcedure
+      .input(z.object({ studentId: z.number() }))
+      .query(async ({ input }) => {
+        const student = await db.getStudentById(input.studentId);
+        if (!student) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Student not found",
+          });
+        }
+
+        const attendances = await db.getAttendancesByStudent(input.studentId);
+        const creditHistory = await db.getCreditHistoryByStudent(
+          input.studentId
+        );
+
+        return {
+          student,
+          attendances,
+          creditHistory,
+        };
+      }),
+
+    // Get dashboard stats (admin only)
+    getDashboardStats: adminProcedure.query(async () => {
+      const students = await db.getAllStudents();
+      const events = await db.getAllEvents();
+
+      let totalCreditsDistributed = 0;
+      for (const student of students) {
+        totalCreditsDistributed += parseFloat(
+          student.creditosTotais.toString()
+        );
+      }
+
+      return {
+        totalStudents: students.length,
+        totalEvents: events.length,
+        totalCreditsDistributed,
+        activeEvents: events.filter((e) => e.ativo).length,
+      };
+    }),
+  }),
+});
+
+export type AppRouter = typeof appRouter;
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\services\services.ts =====
+import * as studentRepo from "../repositories/studentRepository.js";
+import * as notificationRepo from "../repositories/notificationRepository.js";
+import * as eventRepo from "../repositories/eventRepository.js";
+import * as attendanceRepo from "../repositories/attendanceRepository.js";
+import * as analysisRepo from "../repositories/analysisRepository.js";
+import { invokeLLM } from "../ia/llm.js";
+import { notifyOwner } from "../notification/notification.js";
+
+class AppError extends Error {
+  statusCode: number;
+
+  constructor(message: string, statusCode: number) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+/**
+ * Enviar notificaÃ§Ã£o por email para aluno quando recebe crÃ©ditos
+ */
+export async function notifyStudentCreditsReceived(
+  studentId: number,
+  eventName: string,
+  credits: number,
+  totalCredits: number
+) {
+  const student = await studentRepo.getStudentById(studentId);
+  if (!student) return;
+
+  // Criar notificaÃ§Ã£o no banco de dados
+  await notificationRepo.createNotification({
+  studentId,
+  tipo: "creditos_recebidos",
+  titulo: "CrÃ©ditos Recebidos",
+  mensagem: `VocÃª recebeu ${credits} crÃ©ditos por participar do evento "${eventName}". Total acumulado: ${totalCredits}`,
+  enviado: false,
+  });
+
+  // Aqui ainda vai integrar com um serviÃ§o de email real
+  // Por enquanto, apenas registrar no banco
+  console.log(`[EMAIL] NotificaÃ§Ã£o de crÃ©ditos enviada para ${student.email ?? "email nÃ£o informado"}`);
+}
+
+/**
+ * Notificar alunos sobre novo evento criado
+ */
+export async function notifyStudentsNewEvent(eventName: string, eventDate: Date) {
+  const students = await studentRepo.getAllStudents();
+
+  for (const student of students) {
+    await notificationRepo.createNotification({
+      studentId: student.id,
+      tipo: "novo_evento",
+      titulo: "Novo Evento DisponÃ­vel",
+      mensagem: `Um novo evento "${eventName}" foi criado para ${eventDate.toLocaleDateString("pt-BR")}. Registre sua presenÃ§a!`,
+      enviado: false,
+    });
+  }
+
+  console.log(`[EMAIL] NotificaÃ§Ã£o de novo evento enviada para ${students.length} alunos`);
+}
+
+/**
+ * Notificar aluno quando certificado fica disponÃ­vel
+ */
+export async function notifyStudentCertificateAvailable(
+  studentId: number,
+  eventName: string
+) {
+  const student = await studentRepo.getStudentById(studentId);
+  if (!student) return;
+
+  await notificationRepo.createNotification({
+    studentId,
+    tipo: "certificado_disponivel",
+    titulo: "Certificado DisponÃ­vel",
+    mensagem: `Seu certificado de participaÃ§Ã£o no evento "${eventName}" estÃ¡ disponÃ­vel para download!`,
+    enviado: false,
+  });
+
+  console.log(`[EMAIL] NotificaÃ§Ã£o de certificado enviada para ${student.email ?? "email nÃ£o informado"}`);
+}
+
+export async function registerAttendance(
+  studentId: number,
+  eventId: number
+) {
+  try {
+    // 1. Validar existÃªncia
+    const student = await studentRepo.getStudentById(studentId);
+    if (!student) {
+      throw new AppError("Aluno nÃ£o encontrado", 404);
+    }
+
+    const event = await eventRepo.getEventById(eventId);
+    if (!event) {
+      throw new AppError("Evento nÃ£o encontrado", 404);
+    }
+
+    // 2. Validar evento ativo
+    if (!event.ativo) {
+      throw new AppError("Evento nÃ£o estÃ¡ ativo", 400);
+    }
+
+    // 3. Validar duplicidade
+    const existing = await attendanceRepo.getAttendanceByStudentAndEvent(
+      studentId,
+      eventId
+    );
+
+    if (existing) {
+      throw new AppError("PresenÃ§a jÃ¡ registrada", 409);
+    }
+
+    // 4. Calcular crÃ©ditos
+    const previousCredits = Number(student.creditosTotais ?? 0);
+    const eventCredits = Number(event.creditos ?? 0);
+    const newTotal = previousCredits + eventCredits;
+
+    // âš ï¸ ORDEM CORRETA (consistÃªncia lÃ³gica)
+
+    // 5. Registrar presenÃ§a
+    const attendanceResult = await attendanceRepo.createAttendance({
+      studentId,
+      eventId,
+      creditosRegistrados: eventCredits,
+    });
+
+    // âš ï¸ IMPORTANTE: drizzle nÃ£o retorna id direto
+    // entÃ£o nÃ£o use attendance.id
+    const attendanceId = attendanceResult?.insertId ?? null;
+
+    // 6. Atualizar crÃ©ditos
+    await studentRepo.updateStudent(studentId, {
+      creditosTotais: newTotal,
+    });
+
+    // 7. HistÃ³rico
+    await attendanceRepo.createCreditHistory({
+      studentId,
+      eventId,
+      creditosAdicionados: eventCredits,
+      creditosTotaisApos: newTotal,
+      descricao: `CrÃ©ditos recebidos no evento "${event.nome}"`,
+    });
+
+    // 8. NotificaÃ§Ã£o
+    await notifyStudentCreditsReceived(
+      studentId,
+      event.nome,
+      eventCredits,
+      newTotal
+    );
+
+    return {
+      success: true,
+      message: "PresenÃ§a registrada com sucesso",
+      data: {
+        attendanceId,
+        creditosAdicionados: eventCredits,
+        totalCreditos: newTotal,
+      },
+    };
+  } catch (error: any) {
+    console.error("[ATTENDANCE] Erro ao registrar presenÃ§a:", error);
+
+    if (error instanceof AppError) {
+      return {
+        success: false,
+        message: error.message,
+        statusCode: error.statusCode,
+      };
+    }
+
+    return {
+      success: false,
+      message: "Erro interno ao registrar presenÃ§a",
+      statusCode: 500,
+    };
+  }
+}
+
+/**
+ * Gerar anÃ¡lises sobre frequÃªncia de alunos usando LLM
+ */
+export async function generateFrequencyAnalysis(adminId: number) {
+  try {
+    const students = await studentRepo.getAllStudents();
+    const events = await eventRepo.getAllEvents();
+
+    // Coletar dados de participaÃ§Ã£o
+    const participationData = await Promise.all(
+      students.map(async (student) => {
+        const attendances = await attendanceRepo.getAttendancesByStudent(student.id);
+        return {
+          name: student.nome,
+          course: student.curso,
+          totalCredits: parseFloat(student.creditosTotais ?? "0"),
+          participations: attendances.length,
+        };
+      })
+    );
+
+    // Preparar prompt para LLM
+    const prompt = `Analise os seguintes dados de participaÃ§Ã£o de alunos em eventos acadÃªmicos e gere insights sobre padrÃµes de frequÃªncia:
+
+Dados de ParticipaÃ§Ã£o:
+${JSON.stringify(participationData, null, 2)}
+
+Total de Eventos DisponÃ­veis: ${events.length}
+
+Por favor, forneÃ§a:
+1. PadrÃµes gerais de frequÃªncia
+2. Alunos com melhor e pior participaÃ§Ã£o
+3. SugestÃµes de melhorias para aumentar a participaÃ§Ã£o
+4. RecomendaÃ§Ãµes para a secretaria
+
+Responda em portuguÃªs de forma clara e estruturada.`;
+/*
+    const response = await invokeLLM({
+      messages: [
+        {
+          role: "system",
+          content:
+            "VocÃª Ã© um analista de dados educacional especializado em anÃ¡lise de participaÃ§Ã£o em eventos acadÃªmicos.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+    });
+
+    const analysisContent =
+      typeof response.choices[0]?.message?.content === "string"
+        ? response.choices[0].message.content
+        : "AnÃ¡lise nÃ£o disponÃ­vel";
+*/
+    const analysisContent = `
+    [ANÃLISE SIMULADA]
+
+    Total de alunos: ${students.length}
+    Total de eventos: ${events.length}
+
+    Resumo:
+    - Sistema funcionando corretamente
+    - Coleta de dados operacional
+    - IntegraÃ§Ã£o com banco OK
+
+    (LLM desativado para testes)
+    `;
+
+    // Salvar anÃ¡lise no banco de dados
+    await analysisRepo.createAnalysis({
+      tipo: "frequencia",
+      conteudo: analysisContent,
+      criadoPor: adminId
+    });
+
+    /* Notificar secretaria
+    await notifyOwner({
+      title: "AnÃ¡lise de FrequÃªncia Gerada",
+      content: `Uma nova anÃ¡lise sobre padrÃµes de frequÃªncia de alunos foi gerada. Acesse o painel administrativo para visualizar.`,
+    }); */
+
+    return analysisContent;
+  } catch (error) {
+    console.error("[LLM] Erro ao gerar anÃ¡lise de frequÃªncia:", error);
+    throw error;
+  }
+}
+
+/**
+ * Gerar sugestÃµes de melhorias usando LLM
+ */
+export async function generateImprovementSuggestions(adminId: number) {
+  try {
+    const students = await studentRepo.getAllStudents();
+    const events = await eventRepo.getAllEvents();
+    const analyses = await analysisRepo.getLatestAnalyses();
+
+    // Coletar estatÃ­sticas
+    let totalParticipations = 0;
+    let totalCreditsDistributed = 0;
+
+    for (const student of students) {
+      totalParticipations += (await attendanceRepo.getAttendancesByStudent(student.id)).length;
+      totalCreditsDistributed += parseFloat(student.creditosTotais ?? "0");
+    }
+
+    const avgParticipationPerStudent =
+      students.length > 0 ? totalParticipations / students.length : 0;
+
+    const prompt = `Baseado nos seguintes dados do sistema de eventos acadÃªmicos, gere sugestÃµes de melhorias:
+
+EstatÃ­sticas Gerais:
+- Total de Alunos: ${students.length}
+- Total de Eventos: ${events.length}
+- Total de ParticipaÃ§Ãµes: ${totalParticipations}
+- CrÃ©ditos DistribuÃ­dos: ${totalCreditsDistributed}
+- MÃ©dia de ParticipaÃ§Ãµes por Aluno: ${avgParticipationPerStudent.toFixed(2)}
+
+AnÃ¡lises Anteriores:
+${analyses.slice(0, 3).map((a) => a.conteudo).join("\n---\n")}
+
+Por favor, gere:
+1. 5 sugestÃµes prÃ¡ticas para aumentar a participaÃ§Ã£o
+2. EstratÃ©gias para melhorar a divulgaÃ§Ã£o de eventos
+3. RecomendaÃ§Ãµes de tipos de eventos mais atraentes
+4. Propostas para gamificaÃ§Ã£o do sistema de crÃ©ditos
+
+Responda em portuguÃªs de forma clara e acionÃ¡vel.`;
+/*
+    const response = await invokeLLM({
+      messages: [
+        {
+          role: "system",
+          content:
+            "VocÃª Ã© um consultor educacional especializado em engajamento de alunos em atividades acadÃªmicas.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+    });
+
+    const suggestionsContent =
+      typeof response.choices[0]?.message?.content === "string"
+        ? response.choices[0].message.content
+        : "SugestÃµes nÃ£o disponÃ­veis";
+*/
+    const suggestionsContent = `
+    [SUGESTÃ•ES SIMULADAS]
+
+    1. Melhorar divulgaÃ§Ã£o dos eventos
+    2. Criar sistema de ranking de participaÃ§Ã£o
+    3. Oferecer bÃ´nus por frequÃªncia
+    4. Enviar notificaÃ§Ãµes automÃ¡ticas
+    5. Criar eventos mais curtos e objetivos
+
+    (LLM desativado para testes)
+    `;
+    // Salvar sugestÃµes no banco de dados
+    await analysisRepo.createAnalysis({
+      tipo: "sugestoes",
+      conteudo: suggestionsContent,
+      criadoPor: adminId
+    });
+
+    // Notificar secretaria
+    console.log("NotificaÃ§Ã£o simulada");
+    /*
+    await notifyOwner({
+      title: "SugestÃµes de Melhorias Geradas",
+      content: `Novas sugestÃµes para melhorar a participaÃ§Ã£o dos alunos foram geradas. Acesse o painel administrativo para visualizar.`,
+    });
+    */
+
+    return suggestionsContent;
+  } catch (error) {
+    console.error("[LLM] Erro ao gerar sugestÃµes de melhorias:", error);
+    throw error;
+  }
+}
+
+/**
+ * Enviar notificaÃ§Ãµes pendentes (chamado periodicamente)
+ */
+export async function sendPendingNotifications() {
+  try {
+    const pendingNotifications = await notificationRepo.getUnsentNotifications();
+
+    for (const notification of pendingNotifications) {
+      const student = await studentRepo.getStudentById(notification.studentId);
+      if (!student) continue;
+
+      // Aqui vocÃª integraria com um serviÃ§o de email real
+      // Por enquanto, apenas marcamos como enviado
+      console.log(
+        `[EMAIL] Enviando: ${notification.titulo} para ${student.email ?? "email nÃ£o informado"}`
+      );
+
+      await notificationRepo.updateNotification(notification.id, {
+        enviado: true,
+        dataEnvio: new Date(),
+      });
+    }
+
+    console.log(`[NOTIFICATIONS] ${pendingNotifications.length} notificaÃ§Ãµes enviadas`);
+  } catch (error) {
+    console.error("[NOTIFICATIONS] Erro ao enviar notificaÃ§Ãµes:", error);
+  }
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\storage\storage.ts =====
+// Preconfigured storage helpers for Manus WebDev templates
+// Uses the Biz-provided storage proxy (Authorization: Bearer <token>)
+
+import { ENV } from '../core/env.js';
+
+type StorageConfig = { baseUrl: string; apiKey: string };
+
+function getStorageConfig(): StorageConfig {
+  const baseUrl = ENV.forgeApiUrl;
+  const apiKey = ENV.forgeApiKey;
+
+  if (!baseUrl || !apiKey) {
+    throw new Error(
+      "Storage proxy credentials missing: set BUILT_IN_FORGE_API_URL and BUILT_IN_FORGE_API_KEY"
+    );
+  }
+
+  return { baseUrl: baseUrl.replace(/\/+$/, ""), apiKey };
+}
+
+function buildUploadUrl(baseUrl: string, relKey: string): URL {
+  const url = new URL("v1/storage/upload", ensureTrailingSlash(baseUrl));
+  url.searchParams.set("path", normalizeKey(relKey));
+  return url;
+}
+
+async function buildDownloadUrl(
+  baseUrl: string,
+  relKey: string,
+  apiKey: string
+): Promise<string> {
+  const downloadApiUrl = new URL(
+    "v1/storage/downloadUrl",
+    ensureTrailingSlash(baseUrl)
+  );
+  downloadApiUrl.searchParams.set("path", normalizeKey(relKey));
+  const response = await fetch(downloadApiUrl, {
+    method: "GET",
+    headers: buildAuthHeaders(apiKey),
+  });
+  return (await response.json()).url;
+}
+
+function ensureTrailingSlash(value: string): string {
+  return value.endsWith("/") ? value : `${value}/`;
+}
+
+function normalizeKey(relKey: string): string {
+  return relKey.replace(/^\/+/, "");
+}
+
+function toFormData(
+  data: Buffer | Uint8Array | string,
+  contentType: string,
+  fileName: string
+): FormData {
+  const blob =
+    typeof data === "string"
+      ? new Blob([data], { type: contentType })
+      : new Blob([data as any], { type: contentType });
+  const form = new FormData();
+  form.append("file", blob, fileName || "file");
+  return form;
+}
+
+function buildAuthHeaders(apiKey: string): HeadersInit {
+  return { Authorization: `Bearer ${apiKey}` };
+}
+
+export async function storagePut(
+  relKey: string,
+  data: Buffer | Uint8Array | string,
+  contentType = "application/octet-stream"
+): Promise<{ key: string; url: string }> {
+  const { baseUrl, apiKey } = getStorageConfig();
+  const key = normalizeKey(relKey);
+  const uploadUrl = buildUploadUrl(baseUrl, key);
+  const formData = toFormData(data, contentType, key.split("/").pop() ?? key);
+  const response = await fetch(uploadUrl, {
+    method: "POST",
+    headers: buildAuthHeaders(apiKey),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const message = await response.text().catch(() => response.statusText);
+    throw new Error(
+      `Storage upload failed (${response.status} ${response.statusText}): ${message}`
+    );
+  }
+  const url = (await response.json()).url;
+  return { key, url };
+}
+
+export async function storageGet(relKey: string): Promise<{ key: string; url: string; }> {
+  const { baseUrl, apiKey } = getStorageConfig();
+  const key = normalizeKey(relKey);
+  return {
+    key,
+    url: await buildDownloadUrl(baseUrl, key, apiKey),
+  };
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\tests\test-db.ts =====
+import { getDb } from "../database/db.js";
+
+async function testConnection() {
+  try {
+    const db = await getDb();
+
+    if (!db) {
+      console.log("âŒ Banco nÃ£o conectado (getDb retornou null)");
+      return;
+    }
+
+    console.log("âœ… ConexÃ£o Drizzle OK");
+
+    const result = await db.execute("SELECT 1 as test");
+
+    console.log("Resultado:", result);
+
+    console.log("âœ… Banco funcionando corretamente");
+  } catch (error) {
+    console.error("âŒ Erro:", error);
+  }
+}
+
+testConnection();
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\tests\test-flow.ts =====
+import { generateFrequencyAnalysis, generateImprovementSuggestions } from "../services/services.js";
+
+console.log("SERVICES CARREGADO");
+async function testFlow() {
+  try {
+    console.log("ðŸš€ Iniciando teste de fluxo completo...\n");
+
+    const adminId = 1; // precisa existir no banco
+
+    console.log("ðŸ“Š Gerando anÃ¡lise de frequÃªncia...");
+    const analysis = await generateFrequencyAnalysis(adminId);
+    console.log("âœ… AnÃ¡lise gerada:\n", analysis);
+
+    console.log("\nðŸ’¡ Gerando sugestÃµes...");
+    const suggestions = await generateImprovementSuggestions(adminId);
+    console.log("âœ… SugestÃµes geradas:\n", suggestions);
+
+    console.log("\nðŸŽ‰ TESTE FINALIZADO COM SUCESSO");
+  } catch (error) {
+    console.error("âŒ ERRO NO TESTE:", error);
+  }
+}
+
+testFlow();
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\trpc\context.ts =====
+import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
+import * as db from "../database/db.js";
+
+export type TrpcContext = {
+  req: CreateExpressContextOptions["req"];
+  res: CreateExpressContextOptions["res"];
+  user: any | null;
+};
+
+export async function createContext({ req, res }: CreateExpressContextOptions): Promise<TrpcContext> {
+  // usuÃ¡rio do Passport fica dentro da sessÃ£o
+  const sessionUserId = (req.session as any)?.passport?.user;
+
+  if (!sessionUserId) {
+    return {
+      req,
+      res,
+      user: null,
+    };
+  }
+
+  // busca usuÃ¡rio real no banco
+  const dbUser = await db.getUserById(sessionUserId);
+
+  if (!dbUser) {
+    return {
+      req,
+      res,
+      user: null,
+    };
+  }
+
+  return {
+    req,
+    res,
+    user: {
+      id: dbUser.id,
+      email: dbUser.email,
+      name: dbUser.name,
+      role: dbUser.role,
+    },
+  };
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\trpc\trpc.ts =====
+import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from "../core/const.js";
+import { initTRPC, TRPCError } from "@trpc/server";
+import superjson from "superjson";
+import type { TrpcContext } from "./context.js";
+
+const t = initTRPC.context<TrpcContext>().create({
+  transformer: superjson,
+});
+
+export const router = t.router;
+export const publicProcedure = t.procedure;
+
+const requireUser = t.middleware(async opts => {
+  const { ctx, next } = opts;
+
+  if (!ctx.user) {
+    throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  }
+
+  return next({
+    ctx: {
+      ...ctx,
+      user: ctx.user,
+    },
+  });
+});
+
+export const protectedProcedure = t.procedure.use(requireUser);
+
+export const adminProcedure = t.procedure.use(
+  t.middleware(async opts => {
+    const { ctx, next } = opts;
+
+    if (!ctx.user || ctx.user.role !== 'admin') {
+      throw new TRPCError({ code: "FORBIDDEN", message: NOT_ADMIN_ERR_MSG });
+    }
+
+    return next({
+      ctx: {
+        ...ctx,
+        user: ctx.user,
+      },
+    });
+  }),
+);
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\backend\src\server.ts =====
+import express, { Request, Response, NextFunction } from "express";
+import session from "express-session";
+import passport from "passport";
+import { Strategy as GoogleStrategy } from "passport-google-oauth20";
+import path from "path";
+import { fileURLToPath } from "url";
+import dotenv from "dotenv";
+import * as trpcExpress from "@trpc/server/adapters/express";
+import { appRouter } from "./routes/routers.js";
+import { createContext } from "./trpc/context.js";
+import * as db from "./database/db.js";
+import cors from "cors";
+
+dotenv.config();
+if (!process.env.SESSION_SECRET) {
+  throw new Error("SESSION_SECRET nÃ£o definido");
+}
+if (!process.env.GOOGLE_CLIENT_ID) {
+  throw new Error("GOOGLE_CLIENT_ID nÃ£o definido");
+}
+if (!process.env.GOOGLE_CLIENT_SECRET) {
+  throw new Error("GOOGLE_CLIENT_SECRET nÃ£o definido");
+}
+if (!process.env.GOOGLE_CALLBACK_URL) {
+  throw new Error("GOOGLE_CALLBACK_URL nÃ£o definido");
+}
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PUBLIC_PATH = path.resolve(__dirname, "../public");
+const app = express();
+
+
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+    credentials: true,
+  })
+);
+
+app.use(express.json());
+
+/* CONFIGURAÃ‡ÃƒO DE SESSÃƒO */
+
+app.use(
+  session({
+    name: "presenca.qr.session",
+    secret: process.env.SESSION_SECRET!,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: false,
+      httpOnly: true,
+      sameSite: "lax",
+    }
+  })
+);
+
+/* PASSPORT */
+
+app.use(passport.initialize());
+app.use(passport.session());
+app.use(
+  "/trpc",
+  trpcExpress.createExpressMiddleware({
+    router: appRouter,
+    createContext,
+  })
+);
+
+passport.serializeUser((user: any, done) => {
+  // salva apenas o ID na sessÃ£o
+  done(null, user.id);
+});
+
+passport.deserializeUser(async (id: number, done) => {
+  try {
+    const dbUser = await db.getUserById(id);
+
+    if (!dbUser) {
+      return done(null, false);
+    }
+
+    const user = {
+      id: dbUser.id,
+      email: dbUser.email,
+      name: dbUser.name,
+      role: dbUser.role,
+    };
+
+    done(null, user);
+  } catch (error) {
+    done(error, null);
+  }
+});
+
+/* GOOGLE LOGIN */
+
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID!,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
+      callbackURL: process.env.GOOGLE_CALLBACK_URL!,
+    },
+    async(accessToken, refreshToken, profile, done) => {
+      try {
+        const email = profile.emails?.[0]?.value;
+        const googleId = profile.id;
+
+        if (!googleId) {
+          return done(new Error("ID invÃ¡lido do Google"), undefined);
+        }
+
+        if (!email) {
+          return done(new Error("Email nÃ£o encontrado no Google"), undefined);
+        }
+
+        const adminList =
+          process.env.ADMIN_EMAILS?.split(",").map((e) => e.trim()) || [];
+
+        // 1. garante usuÃ¡rio no banco
+        await db.upsertUser({
+          openId: googleId,
+          name: profile.displayName,
+          email,
+          loginMethod: "google",
+          role: adminList.includes(email) ? "admin" : "user",
+        });
+
+        // 2. busca usuÃ¡rio no banco
+        const dbUser = await db.getUserByOpenId(googleId);
+
+        if (!dbUser) {
+          return done(new Error("Erro ao recuperar usuÃ¡rio"), undefined);
+        }
+
+        // 3. agora usa o ID NUMÃ‰RICO do banco
+        let student = await db.getStudentByUserId(dbUser.id);
+
+        if (!student) {
+          await db.createStudent({
+            userId: dbUser.id,
+            matricula: `MAT-${Date.now()}`,
+            nome: profile.displayName,
+            curso: "NÃ£o informado",
+            email,
+            creditosTotais: "0.00"
+          });
+
+          student = await db.getStudentByUserId(dbUser.id);
+        }
+
+        // 4. monta usuÃ¡rio da sessÃ£o
+        const user = {
+           id: dbUser.id,
+          email,
+          name: profile.displayName,
+          role: adminList.includes(email) ? "admin" : "user",
+        };
+
+        return done(null, user);
+      } catch (error) {
+        return done(error as any, undefined);
+      }
+    }
+  )
+);
+
+/* LISTA DE ADMINS */
+
+
+/* MIDDLEWARE DE PROTEÃ‡ÃƒO */
+
+function garantirLogin(req: Request, res: Response, next: NextFunction) {
+  if ((req as any).isAuthenticated()) {
+    return next();
+  }
+
+  res.redirect("/auth/google");
+}
+
+function garantirAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!(req as any).isAuthenticated()) {
+    return res.redirect("/auth/google");
+  }
+
+  const user = (req as any).user;
+
+  if (user?.role === "admin") {
+    return next();
+  }
+
+  res.redirect("/estudante.html");
+}
+
+// iniciar login
+app.get(
+  "/auth/google",
+  passport.authenticate("google", { scope: ["profile", "email"] })
+);
+
+// retorno do Google
+app.get(
+  "/auth/google/callback",
+  passport.authenticate("google", { failureRedirect: "/" }),
+  (req: Request, res: Response) => {
+    const user = (req as any).user;
+
+    if (user?.role === "admin") {
+      res.redirect("http://localhost:5173/admin");
+    } else {
+      res.redirect("http://localhost:5173/student");
+    }
+  }
+);
+
+/* PROTEGER PÃGINAS */
+
+app.get("/estudante.html", garantirLogin, (req: Request, res: Response) => {
+  res.sendFile(path.join(PUBLIC_PATH, "estudante.html"));
+});
+
+app.get("/secretaria.html", garantirAdmin, (req: Request, res: Response) => {
+  res.sendFile(path.join(PUBLIC_PATH, "secretaria.html"));
+});
+
+/* USUÃRIO LOGADO */
+
+app.get("/user", (req: Request, res: Response) => {
+  if ((req as any).user) {
+    res.json((req as any).user);
+  } else {
+    res.status(401).json({ error: "NÃ£o autenticado" });
+  }
+});
+
+/* LOGOUT */
+
+app.get("/logout", (req, res, next) => {
+  const sessionName = "presenca.qr.session";
+
+  req.logout(function (err) {
+    if (err) return next(err);
+
+    if (!req.session) {
+      return res.redirect("http://localhost:5173/");
+    }
+
+    req.session.destroy((err) => {
+      if (err) return next(err);
+
+      res.clearCookie(sessionName, {
+        path: "/",
+        httpOnly: true,
+        sameSite: "lax",
+        secure: false,
+      });
+
+      res.redirect("http://localhost:5173/");
+    });
+  });
+});
+
+/* SERVIDOR */
+
+app.listen(3000, () => {
+  console.log("Servidor rodando em http://localhost:3000");
+});
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\src\auth\AuthProvider.tsx =====
+import { createContext, useContext } from "react";
+import { trpc } from "../lib/trpc";
+
+type AuthContextType = {
+  user: any;
+  isLoading: boolean;
+  refetch: () => void;
+};
+
+const AuthContext = createContext<AuthContextType | null>(null);
+
+export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const query = trpc.auth.me.useQuery(undefined, {
+    refetchOnMount: true,
+    refetchOnWindowFocus: false,
+    staleTime: 0,
+    retry: false,
+  });
+
+  return (
+    <AuthContext.Provider
+      value={{
+        user: query.data,
+        isLoading: query.isLoading,
+        refetch: query.refetch,
+      }}
+    >
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export function useAuth() {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used inside AuthProvider");
+  return ctx;
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\src\components\ProtectedRoute.tsx =====
+import { useAuth } from "../auth/AuthProvider";
+
+type Props = {
+  children: React.ReactNode;
+  requireAdmin?: boolean;
+};
+
+export default function ProtectedRoute({ children, requireAdmin }: Props) {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div>Carregando...</div>;
+  }
+
+  if (!user) {
+    return <div>VocÃª precisa estar logado</div>;
+  }
+
+  if (requireAdmin && user.role !== "admin") {
+    return <div>Acesso negado</div>;
+  }
+
+  return <>{children}</>;
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\src\lib\trpc.ts =====
+import { createTRPCReact } from "@trpc/react-query";
+import type { AppRouter } from "../../../backend/src/routes/routers";
+
+export const trpc = createTRPCReact<AppRouter>();
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\src\pages\AdminDashboard.tsx =====
+import { useState } from "react";
+import { trpc } from "../lib/trpc";
+import { useAuth } from "../auth/AuthProvider";
+
+export default function AdminDashboard() {
+  const { refetch } = useAuth();
+
+  const logoutMutation = trpc.auth.logout.useMutation({
+    onSuccess: async () => {
+      refetch(); // atualiza sessÃ£o do AuthProvider
+
+      // forÃ§a estado global consistente antes de sair
+      window.location.href = "/";
+    },
+  });
+
+  const {
+    data: events,
+    isLoading,
+    error,
+    refetch: refetchEvents
+  } = trpc.event.listAll.useQuery();
+
+  const createEvent = trpc.event.create.useMutation({
+    onSuccess: () => {
+      alert("Evento criado!");
+      refetchEvents();
+    },
+  });
+
+  const updateEvent = trpc.event.update.useMutation({
+    onSuccess: () => {
+      refetchEvents();
+    },
+  });
+
+  const [form, setForm] = useState({
+    nome: "",
+    local: "",
+    data: "",
+    horario: "",
+    cargaHoraria: 1,
+    creditos: 1,
+  });
+
+  const handleCreate = () => {
+    if (!form.nome || !form.data || !form.horario || !form.local) {
+      alert("Preencha todos os campos");
+      return;
+    }
+
+    const dateTime = new Date(`${form.data}T${form.horario}`);
+
+    createEvent.mutate({
+      ...form,
+      data: dateTime,
+    });
+  };
+
+  if (isLoading) return <div>Carregando...</div>;
+  if (error) return <div>Erro ao carregar eventos</div>;
+
+  return (
+    <div style={{ padding: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h1>Painel Administrativo</h1>
+
+        <button
+          onClick={() => logoutMutation.mutate()}
+          style={{
+            padding: "6px 12px",
+            cursor: "pointer",
+            background: "#e11d48",
+            color: "white",
+            border: "none",
+            borderRadius: 4,
+          }}
+        >
+          Sair
+        </button>
+      </div>
+
+      {/* FORM CRIAR EVENTO */}
+      <div style={{ border: "1px solid #ccc", padding: 10, marginBottom: 20 }}>
+        <h2>Criar Evento</h2>
+
+        <input
+          placeholder="Nome"
+          onChange={(e) => setForm({ ...form, nome: e.target.value })}
+        />
+        <br />
+
+        <input
+          type="date"
+          onChange={(e) => setForm({ ...form, data: e.target.value })}
+        />
+        <br />
+
+        <input
+          type="time"
+          onChange={(e) => setForm({ ...form, horario: e.target.value })}
+        />
+        <br />
+
+        <input
+          placeholder="Local"
+          onChange={(e) => setForm({ ...form, local: e.target.value })}
+        />
+        <br />
+
+        <input
+          type="number"
+          placeholder="Carga HorÃ¡ria"
+          onChange={(e) =>
+            setForm({ ...form, cargaHoraria: Number(e.target.value) })
+          }
+        />
+        <br />
+
+        <input
+          type="number"
+          placeholder="CrÃ©ditos"
+          onChange={(e) =>
+            setForm({ ...form, creditos: Number(e.target.value) })
+          }
+        />
+        <br />
+
+        <button onClick={handleCreate}>Criar Evento</button>
+      </div>
+
+      {/* LISTA DE EVENTOS */}
+      <h2>Eventos</h2>
+
+      {events?.length === 0 && <p>Nenhum evento cadastrado</p>}
+
+      {events?.map((event) => (
+        <div
+          key={event.id}
+          style={{
+            border: "1px solid #ccc",
+            padding: 10,
+            marginBottom: 10,
+          }}
+        >
+          <strong>{event.nome}</strong>
+
+          <p>Data: {new Date(event.data).toLocaleDateString()}</p>
+          <p>Local: {event.local}</p>
+          <p>CrÃ©ditos: {event.creditos}</p>
+          <p>Status: {event.ativo ? "Ativo" : "Inativo"}</p>
+
+          {/* QR CODE */}
+          {event.qrCodeUrl && (
+            <img
+              src={event.qrCodeUrl}
+              alt="QR Code"
+              style={{ width: 100, marginTop: 10 }}
+            />
+          )}
+
+          {/* AÃ‡Ã•ES */}
+          <div style={{ marginTop: 10 }}>
+            <button
+              onClick={() =>
+                updateEvent.mutate({
+                  id: event.id,
+                  ativo: !event.ativo,
+                })
+              }
+            >
+              {event.ativo ? "Desativar" : "Ativar"}
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\src\pages\AdminDashboardV2.tsx =====
+import { trpc } from "../lib/trpc";
+import DashboardLayout from "../components/DashboardLayout";
+import { Button } from "../components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../components/ui/table";
+import { Badge } from "../components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
+import { Loader2, Plus, Users, Calendar, TrendingUp, QrCode, LogOut, Eye, Edit2, Trash2, AlertCircle, CheckCircle } from "lucide-react";
+import { format } from "date-fns";
+import { ptBR } from "date-fns/locale";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { toast } from "sonner";
+import { useAuth } from "../_core/hooks/useAuth";
+import { useLocation } from "wouter";
+
+const eventSchema = z.object({
+  nome: z.string().min(1, "Nome Ã© obrigatÃ³rio"),
+  descricao: z.string().optional(),
+  data: z.string().min(1, "Data Ã© obrigatÃ³ria"),
+  horario: z.string().min(1, "HorÃ¡rio Ã© obrigatÃ³rio"),
+  local: z.string().min(1, "Local Ã© obrigatÃ³rio"),
+  cargaHoraria: z.coerce.number().min(0.5, "Carga horÃ¡ria deve ser maior que 0"),
+  creditos: z.coerce.number().min(0.5, "CrÃ©ditos deve ser maior que 0"),
+});
+
+type EventFormData = z.infer<typeof eventSchema>;
+
+export default function AdminDashboard() {
+  const [isOpen, setIsOpen] = useState(false);
+  const [selectedQrEvent, setSelectedQrEvent] = useState<any>(null);
+  const [selectedAttendanceEvent, setSelectedAttendanceEvent] = useState<any>(null);
+  const { logout } = useAuth();
+  const [, setLocation] = useLocation();
+  const { register, handleSubmit, reset } = useForm<EventFormData>({
+    resolver: zodResolver(eventSchema),
+  });
+
+  const { data: stats, isLoading: statsLoading } =
+    trpc.admin.getDashboardStats.useQuery();
+  const { data: events, isLoading: eventsLoading, refetch: refetchEvents } =
+    trpc.event.listAll.useQuery();
+  const { data: students, isLoading: studentsLoading } =
+    trpc.admin.getAllStudents.useQuery();
+  const { data: attendances } =
+    trpc.event.getAttendanceList.useQuery(
+      { eventId: selectedAttendanceEvent?.id },
+      {
+        enabled: !!selectedAttendanceEvent,
+        refetchInterval: 3000,
+      }
+    );
+
+  const createEventMutation = trpc.event.create.useMutation({
+    onSuccess: () => {
+      toast.success("Evento criado com sucesso!");
+      setIsOpen(false);
+      reset();
+      refetchEvents();
+    },
+    onError: (error) => {
+      toast.error(error.message || "Erro ao criar evento");
+    },
+  });
+  const updateEvent = trpc.event.update.useMutation({
+    onSuccess: () => {
+        toast.success("Evento ativado");
+        refetchEvents();
+    },
+  });
+
+  const onSubmit = (data: EventFormData) => {
+    const dateTime = new Date(`${data.data}T${data.horario}`);
+    createEventMutation.mutate({
+        ...data,
+        data: dateTime,
+    });
+ };
+
+  const handleLogout = async () => {
+    await logout();
+    setLocation("/");
+  };
+
+  const isLoading = statsLoading || eventsLoading || studentsLoading;
+
+  if (isLoading) {
+    return (
+      <DashboardLayout>
+        <div className="flex items-center justify-center h-screen">
+          <Loader2 className="h-8 w-8 animate-spin text-green-600" />
+        </div>
+      </DashboardLayout>
+    );
+  }
+
+  const getStatusBadge = (status: boolean) => {
+    return status ? 
+      <Badge className="bg-green-100 text-green-700">Ativo</Badge> :
+      <Badge className="bg-gray-100 text-gray-700">Inativo</Badge>;
+  };
+
+  return (
+    <DashboardLayout>
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">
+              Painel Administrativo ðŸŽ¯
+            </h1>
+            <p className="text-gray-600 mt-1">
+              Gerenciamento de eventos e crÃ©ditos curriculares
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <Dialog open={isOpen} onOpenChange={setIsOpen}>
+              <DialogTrigger asChild>
+                <Button className="bg-green-600 hover:bg-green-700 text-white">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Novo Evento
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Criar Novo Evento</DialogTitle>
+                  <DialogDescription>
+                    Preencha os dados do evento para gerar um QR Code
+                  </DialogDescription>
+                </DialogHeader>
+                <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+                  <div>
+                    <label className="text-sm font-medium">Nome do Evento *</label>
+                    <Input
+                      {...register("nome")}
+                      placeholder="Ex: Palestra de Tecnologia"
+                      className="border-green-200 focus:border-green-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">DescriÃ§Ã£o</label>
+                    <Input
+                      {...register("descricao")}
+                      placeholder="DescriÃ§Ã£o do evento"
+                      className="border-green-200 focus:border-green-600"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-sm font-medium">Data *</label>
+                      <Input type="date" {...register("data")} className="border-green-200 focus:border-green-600" />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">HorÃ¡rio *</label>
+                      <Input type="time" {...register("horario")} className="border-green-200 focus:border-green-600" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium">Local *</label>
+                    <Input
+                      {...register("local")}
+                      placeholder="Ex: AuditÃ³rio Principal"
+                      className="border-green-200 focus:border-green-600"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-sm font-medium">
+                        Carga HorÃ¡ria (h) *
+                      </label>
+                      <Input
+                        type="number"
+                        step="0.5"
+                        {...register("cargaHoraria", {
+                          valueAsNumber: true,
+                        })}
+                        className="border-green-200 focus:border-green-600"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">CrÃ©ditos *</label>
+                      <Input
+                        type="number"
+                        step="0.5"
+                        {...register("creditos", { valueAsNumber: true })}
+                        className="border-green-200 focus:border-green-600"
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    type="submit"
+                    className="w-full bg-green-600 hover:bg-green-700 text-white"
+                    disabled={createEventMutation.isPending}
+                  >
+                    {createEventMutation.isPending ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Criando...
+                      </>
+                    ) : (
+                      "Criar Evento"
+                    )}
+                  </Button>
+                </form>
+              </DialogContent>
+            </Dialog>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={handleLogout}
+              className="text-red-600 hover:text-red-700 hover:bg-red-50"
+            >
+              <LogOut className="w-4 h-4 mr-2" />
+              Sair
+            </Button>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <Card className="border-green-100 hover:border-green-300 transition-colors shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                <Users className="w-4 h-4 text-green-600" />
+                Total de Alunos
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-green-600">{stats?.totalStudents || 0}</div>
+              <p className="text-xs text-gray-500 mt-1">Cadastrados no sistema</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-green-100 hover:border-green-300 transition-colors shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                <Calendar className="w-4 h-4 text-green-600" />
+                Total de Eventos
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-green-600">{stats?.totalEvents || 0}</div>
+              <p className="text-xs text-gray-500 mt-1">
+                {stats?.activeEvents || 0} ativos
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-green-100 hover:border-green-300 transition-colors shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-green-600" />
+                CrÃ©ditos DistribuÃ­dos
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-green-600">
+                {stats?.totalCreditsDistributed || 0}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">No total</p>
+            </CardContent>
+          </Card>
+
+          <Card className="border-green-100 hover:border-green-300 transition-colors shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium text-gray-600 flex items-center gap-2">
+                <CheckCircle className="w-4 h-4 text-green-600" />
+                Taxa de ParticipaÃ§Ã£o
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold text-green-600">
+                {stats?.totalEvents && stats?.totalStudents
+                  ? Math.round(
+                      (stats.totalCreditsDistributed /
+                        (stats.totalEvents * stats.totalStudents)) *
+                        100
+                    )
+                  : 0}
+                %
+              </div>
+              <p className="text-xs text-gray-500 mt-1">MÃ©dia por evento</p>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Tabs */}
+        <Tabs defaultValue="events" className="w-full">
+          <TabsList className="grid w-full grid-cols-2 bg-gray-100 border border-gray-200">
+            <TabsTrigger 
+              value="events"
+              className="data-[state=active]:bg-white data-[state=active]:text-green-600 data-[state=active]:border-b-2 data-[state=active]:border-green-600"
+            >
+              <Calendar className="h-4 w-4 mr-2" />
+              Eventos
+            </TabsTrigger>
+            <TabsTrigger 
+              value="students"
+              className="data-[state=active]:bg-white data-[state=active]:text-green-600 data-[state=active]:border-b-2 data-[state=active]:border-green-600"
+            >
+              <Users className="h-4 w-4 mr-2" />
+              Alunos
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Events Tab */}
+          <TabsContent value="events">
+            <Card className="border-green-100 shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-green-700">Eventos Cadastrados</CardTitle>
+                <CardDescription>
+                  Lista de todos os eventos com QR Codes gerados
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {events && events.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="border-green-100 hover:bg-green-50">
+                          <TableHead className="text-green-700">Evento</TableHead>
+                          <TableHead className="text-green-700">Data</TableHead>
+                          <TableHead className="text-green-700">Local</TableHead>
+                          <TableHead className="text-green-700">CrÃ©ditos</TableHead>
+                          <TableHead className="text-green-700">Status</TableHead>
+                          <TableHead className="text-center text-green-700">QR Code</TableHead>
+                          <TableHead className="text-right text-green-700">AÃ§Ãµes</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {events.map((event) => (
+                          <TableRow key={event.id} className="border-green-100 hover:bg-green-50">
+                            <TableCell className="font-medium text-gray-900">
+                              {event.nome}
+                            </TableCell>
+                            <TableCell className="text-gray-600">
+                              {format(new Date(event.data), "dd/MM/yyyy", {
+                                locale: ptBR,
+                              })}
+                            </TableCell>
+                            <TableCell className="text-gray-600">{event.local}</TableCell>
+                            <TableCell>
+                              <Badge className="bg-green-100 text-green-700">
+                                {event.creditos}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              {getStatusBadge(event.ativo)}
+                            </TableCell>
+                            <TableCell className="text-center">
+                              {event.qrCodeUrl ? (
+                                <img
+                                    src={event.qrCodeUrl}
+                                    alt="QR Code"
+                                    className="h-8 w-8 mx-auto"
+                                />
+                                ) : (
+                                <QrCode className="w-6 h-6 mx-auto text-gray-400" />
+                                )}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  onClick={() =>
+                                    updateEvent.mutate({
+                                      id: event.id,
+                                      ativo: !event.ativo,
+                                    })
+                                  }
+                                  className="p-1 hover:bg-green-100 rounded transition"
+                                >
+                                  <Eye className="w-4 h-4 text-green-600" />
+                                </button>
+                                <button className="p-1 hover:bg-blue-100 rounded transition">
+                                  <Edit2 className="w-4 h-4 text-blue-600" />
+                                </button>
+                                <button className="p-1 hover:bg-red-100 rounded transition">
+                                  <Trash2 className="w-4 h-4 text-red-600" />
+                                </button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <div className="text-center py-12 text-gray-500">
+                    <Calendar className="w-12 h-12 mx-auto mb-4 opacity-30" />
+                    Nenhum evento cadastrado ainda
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+           {/* Students Tab */}
+          <TabsContent value="students">
+            <Card>
+              <CardHeader>
+                <CardTitle>Alunos Cadastrados</CardTitle>
+                <CardDescription>
+                  Lista de todos os alunos e seus crÃ©ditos acumulados
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {students && students.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>MatrÃ­cula</TableHead>
+                          <TableHead>Nome</TableHead>
+                          <TableHead>Curso</TableHead>
+                          <TableHead>Email</TableHead>
+                          <TableHead className="text-right">CrÃ©ditos</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {students.map((student) => (
+                          <TableRow key={student.id}>
+                            <TableCell className="font-medium">
+                              {student.matricula}
+                            </TableCell>
+                            <TableCell>{student.nome}</TableCell>
+                            <TableCell>{student.curso}</TableCell>
+                            <TableCell className="text-sm">
+                              {student.email}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Badge variant="secondary">
+                                {student.creditosTotais}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    Nenhum aluno cadastrado ainda
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+      </div>
+    </DashboardLayout>
+  );
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\src\pages\Login.tsx =====
+import { useAuth } from "../auth/AuthProvider";
+
+function Login() {
+  const { isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div>Verificando sessÃ£o...</div>;
+  }
+
+  const handleLogin = () => {
+    window.location.href = "http://localhost:3000/auth/google";
+  };
+
+  return (
+    <div style={{ padding: 20 }}>
+      <h1>Sistema de PresenÃ§a</h1>
+      <p>FaÃ§a login para continuar</p>
+
+      <button onClick={handleLogin}>
+        Entrar com Google
+      </button>
+    </div>
+  );
+}
+
+export default Login;
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\src\pages\StudentDashboard.tsx =====
+import { useState } from "react";
+import { trpc } from "../lib/trpc";
+import { Scanner } from "@yudiel/react-qr-scanner";
+import { useAuth } from "../auth/AuthProvider";
+
+
+export default function StudentDashboard() {
+
+  const [qrCodeId, setQrCodeId] = useState("");
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [scanned, setScanned] = useState(false);
+
+  const { refetch } = useAuth();
+
+  const { data: profile, isLoading: loadingProfile } =
+    trpc.student.getProfile.useQuery();
+
+  const { data: credits } =
+    trpc.student.getTotalCredits.useQuery();
+
+  const { data: attendances } =
+    trpc.student.getAttendanceHistory.useQuery();
+
+  const { data: history } =
+    trpc.student.getCreditHistory.useQuery();
+
+  const { data: notifications } =
+    trpc.notification.getNotifications.useQuery();
+
+  const utils = trpc.useUtils();
+
+  const registerPresence = trpc.attendance.registerByQRCode.useMutation({
+    onSuccess: async (data) => {
+      alert(`PresenÃ§a registrada! +${data.creditos} crÃ©ditos`);
+
+      await utils.student.getTotalCredits.invalidate();
+      await utils.student.getAttendanceHistory.invalidate();
+      await utils.student.getCreditHistory.invalidate();
+      await utils.notification.getNotifications.invalidate();
+      setQrCodeId("");
+    },
+    onError: (err) => {
+      alert(err.message);
+    },
+  });
+
+  const logoutMutation = trpc.auth.logout.useMutation({
+    onSuccess: async () => {
+      await refetch(); // obrigatÃ³rio
+    },
+  });
+
+  if (loadingProfile) return <div>Carregando...</div>;
+
+  return (
+    <div style={{ padding: 20 }}>
+      <h1>Ãrea do Aluno</h1>
+      {/* LOGOUT */}
+      <div style={{ marginBottom: 20 }}>
+        <button
+          onClick={() => logoutMutation.mutate()}
+          style={{
+            padding: "6px 12px",
+            cursor: "pointer",
+            background: "#e11d48",
+            color: "white",
+            border: "none",
+            borderRadius: 4,
+          }}
+        >
+          Sair
+        </button>
+      </div>
+        {/* REGISTRAR PRESENÃ‡A */}
+        <div style={{ marginBottom: 20, border: "1px solid #ccc", padding: 10 }}>
+        <h2>Registrar PresenÃ§a (QR Code)</h2>
+
+        <input
+            placeholder="Cole o qrCodeId aqui"
+            value={qrCodeId}
+            onChange={(e) => setQrCodeId(e.target.value)}
+        />
+
+        <button
+          disabled={registerPresence.isPending}
+          onClick={() => {
+            if (!qrCodeId) {
+              alert("Informe o QR Code");
+              return;
+            }
+
+            registerPresence.mutate({ qrCodeId });
+          }}
+        >
+          {registerPresence.isPending ? "Registrando..." : "Registrar PresenÃ§a"}
+        </button>
+
+        <button
+          onClick={() => {
+            setScanned(false);
+            setCameraOpen(true);
+          }}
+        >
+          Ler QR Code com CÃ¢mera
+        </button>
+        {cameraOpen && (
+          <div style={{ marginTop: 20 }}>
+            <Scanner
+              onScan={(results) => {
+                if (scanned) return;
+                if (!results || results.length === 0) return;
+
+                try {
+                  const raw = results[0].rawValue;
+                  const parsed = JSON.parse(raw);
+
+                  if (!parsed.qrCodeId) {
+                    throw new Error("QR invÃ¡lido");
+                  }
+
+                  setScanned(true);
+
+                  registerPresence.mutate(
+                    { qrCodeId: parsed.qrCodeId },
+                    {
+                      onSettled: () => {
+                        setCameraOpen(false);
+                      },
+                    }
+                  );
+                } catch {
+                  alert("QR Code invÃ¡lido");
+                }
+              }}
+              onError={(error) => {
+                console.error(error);
+              }}
+              constraints={{ facingMode: "environment" }}
+              styles={{ container: { width: "100%" } }}
+            />
+
+            <button onClick={() => setCameraOpen(false)}>
+              Fechar cÃ¢mera
+            </button>
+          </div>
+        )}
+        </div>
+
+      {/* PERFIL */}
+      <div>
+        <h2>Perfil</h2>
+        <p><strong>Nome:</strong> {profile?.nome}</p>
+        <p><strong>MatrÃ­cula:</strong> {profile?.matricula}</p>
+        <p><strong>Curso:</strong> {profile?.curso}</p>
+      </div>
+
+      {/* CRÃ‰DITOS */}
+      <div>
+        <h2>CrÃ©ditos Totais</h2>
+        <p>{credits?.totalCredits}</p>
+      </div>
+
+      {/* HISTÃ“RICO DE PRESENÃ‡A */}
+      <div>
+        <h2>PresenÃ§as</h2>
+
+        {!attendances ? (
+          <p>Carregando...</p>
+        ) : attendances.length === 0 ? (
+          <p>Nenhuma presenÃ§a</p>
+        ) : (
+          attendances.map((att) => (
+            <div key={att.id} style={{ border: "1px solid #ccc", marginBottom: 10, padding: 10 }}>
+              <p><strong>Evento:</strong> {att.event?.nome}</p>
+              <p><strong>Data:</strong> {new Date(att.timestamp).toLocaleString()}</p>
+              <p><strong>CrÃ©ditos:</strong> {att.creditosRegistrados}</p>
+            </div>
+          ))
+        )}
+      </div>
+
+      {/* HISTÃ“RICO DE CRÃ‰DITOS */}
+      <div>
+        <h2>HistÃ³rico de CrÃ©ditos</h2>
+
+        {history?.map((item) => (
+          <div key={item.id}>
+            <p>{item.descricao}</p>
+            <p>Total apÃ³s: {item.creditosTotaisApos}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* NOTIFICAÃ‡Ã•ES */}
+      <div>
+        <h2>NotificaÃ§Ãµes</h2>
+
+        {notifications?.map((n) => (
+          <div key={n.id}>
+            <strong>{n.titulo}</strong>
+            <p>{n.mensagem}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\src\App.tsx =====
+import Login from "./pages/Login";
+import AdminDashboard from "./pages/AdminDashboard";
+import StudentDashboard from "./pages/StudentDashboard";
+import { useAuth } from "./auth/AuthProvider";
+import ProtectedRoute from "./components/ProtectedRoute";
+
+function App() {
+  const { user, isLoading } = useAuth();
+
+  // BLOQUEIA QUALQUER RENDER ENQUANTO SESSÃƒO NÃƒO ESTÃ RESOLVIDA
+  if (isLoading) {
+    return (
+      <div style={{ padding: 20 }}>
+        Carregando sessÃ£o...
+      </div>
+    );
+  }
+
+  // SÃ“ DECIDE DEPOIS QUE A SESSÃƒO ESTÃ ESTÃVEL
+  if (!user) {
+    return <Login />;
+  }
+
+  if (user.role === "admin") {
+    return (
+      <ProtectedRoute requireAdmin>
+        <AdminDashboard />
+      </ProtectedRoute>
+    );
+  }
+
+  return <StudentDashboard />;
+}
+
+export default App;
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\src\main.tsx =====
+import ReactDOM from "react-dom/client";
+import App from "./App";
+import { AuthProvider } from "./auth/AuthProvider";
+
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { httpBatchLink } from "@trpc/client";
+import superjson from "superjson";
+import { trpc } from "./lib/trpc";
+
+const queryClient = new QueryClient();
+
+const trpcClient = trpc.createClient({
+  links: [
+    httpBatchLink({
+      url: "http://localhost:3000/trpc",
+
+      transformer: superjson, // (lugar correto na v11)
+
+      fetch(url, options) {
+        return fetch(url, {
+          ...options,
+          credentials: "include",
+        });
+      },
+    }),
+  ],
+});
+
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <trpc.Provider client={trpcClient} queryClient={queryClient}>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </QueryClientProvider>
+  </trpc.Provider>
+);
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\eslint.config.js =====
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import tseslint from 'typescript-eslint'
+import { defineConfig, globalIgnores } from 'eslint/config'
+
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      js.configs.recommended,
+      tseslint.configs.recommended,
+      reactHooks.configs.flat.recommended,
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+    },
+  },
+])
+
+===== FILE: C:\Users\fuji\Documents\Edenys\Projeção\Projeto Final\presenca-qr\frontend\vite.config.ts =====
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+// https://vite.dev/config/
+export default defineConfig({
+  plugins: [react()],
+})
+

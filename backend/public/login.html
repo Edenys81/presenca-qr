@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta http-equiv="Content-Security-Policy" content="
+            default-src 'self';
+            connect-src 'self' http://localhost:3000;
+            script-src 'self' 'unsafe-inline';
+            style-src 'self' 'unsafe-inline';
+        ">
+        <title>Sistema Presença QR Code</title>
+        <link rel="stylesheet" href="../css/estilo.css">
+    </head>
+    <body>
+        <header class="topo">
+            <img src="../imagem/logo.png" class="logo">
+            <span>Projeto: Sistema Presença QR Code</span>
+        </header>
+        <div class="login-container">
+            <div class="login-box">
+                <h2>Bem-vindo</h2>
+                <p>Faça login para registrar presença</p>
+                <div class="subtitle">
+                Controle digital de presença acadêmica
+                </div>
+                <button class="google-btn" onclick="loginGoogle()">
+                <img src="https://developers.google.com/identity/images/g-logo.png" class="google-icon">
+                Entrar com Google
+                </button>
+            </div>
+        </div>
+        <script>
+            function loginGoogle(){
+            window.location.href="http://localhost:3000/auth/google"
+            }
+        </script>
+        <footer class="footer">
+        Sistema Presença QR Code • v1.0
+        </footer>
+    </body>
+</html>

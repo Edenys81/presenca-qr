@@ -1,0 +1,153 @@
+body{
+    margin:0;
+    font-family:Arial, Helvetica, sans-serif;
+    background-image:url("../imagem/tropical_leaves.jpg");
+    background-size:cover;
+    background-position:center;
+    height:100vh;
+}
+
+/* topo */
+.topo{
+    position:absolute;
+    top:20px;
+    left:30px;
+    display:flex;
+    align-items:center;
+    color:white;
+    font-size:20px;
+    font-weight:bold;
+    text-shadow:1px 1px 5px black;
+}
+
+.logo{
+    width:50px;
+    margin-right:10px;
+}
+
+/* centralização */
+.login-container{
+    height:100vh;
+    display:flex;
+    justify-content:center;
+    align-items:center;
+    position:relative;
+}
+
+/* efeito vidro */
+.login-box{
+    width:340px;
+    padding:40px;
+    border-radius:15px;
+    text-align:center;
+    /* vidromorfismo */
+    background:rgba(255,255,255,0.15);
+    backdrop-filter:blur(10px);
+    border:1px solid rgba(255,255,255,0.3);
+    box-shadow:0 8px 32px rgba(0,0,0,0.3);
+    /* animação */
+    animation:fadeUp 0.8s ease;
+}
+
+.login-box h2{
+    color:white;
+    margin-top:0;
+}
+
+.login-box p{
+    color:white;
+}
+
+/* botão google */
+.google-btn{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    gap:10px;
+    background:white;
+    border:none;
+    padding:12px;
+    width:100%;
+    font-size:16px;
+    border-radius:8px;
+    cursor:pointer;
+    transition:0.3s;
+}
+
+.google-btn:hover{
+    transform:scale(1.03);
+    box-shadow:0 5px 15px rgba(0,0,0,0.2);
+}
+
+.google-icon{
+    width:20px;
+}
+
+/* animação */
+@keyframes fadeUp{
+    from{
+        opacity:0;
+        transform:translateY(30px);
+    }
+    to{
+        opacity:1;
+        transform:translateY(0);
+    }
+}
+
+/* escurece levemente o fundo */
+body::before{
+    content:"";
+    position:absolute;
+    top:0;
+    left:0;
+    width:100%;
+    height:100%;
+    background:rgba(0,0,0,0.25);
+    z-index:-1;
+}
+
+/* subtítulo */
+.subtitle{
+    color:white;
+    font-size:14px;
+    margin-bottom:25px;
+    opacity:0.9;
+}
+
+/* botão mais moderno */
+.google-btn{
+    font-weight:500;
+    letter-spacing:0.3px;
+}
+
+/* hover estilo SaaS */
+.google-btn:hover{
+    transform:translateY(-2px) scale(1.03);
+}
+
+/* rodapé */
+.footer{
+    position:absolute;
+    bottom:15px;
+    width:100%;
+    text-align:center;
+    color:white;
+    font-size:13px;
+    opacity:0.8;
+}
+
+/* efeito de luz suave */
+
+.login-container::before{
+    content:"";
+    position:absolute;
+    width:500px;
+    height:500px;
+    background:radial-gradient(circle,
+    rgba(255,255,255,0.35) 0%,
+    rgba(255,255,255,0.1) 40%,
+    transparent 70%);
+    filter:blur(80px);
+    z-index:-1;
+}
