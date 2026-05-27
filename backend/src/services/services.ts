@@ -3,8 +3,11 @@ import * as notificationRepo from "../repositories/notificationRepository.js";
 import * as eventRepo from "../repositories/eventRepository.js";
 import * as attendanceRepo from "../repositories/attendanceRepository.js";
 import * as analysisRepo from "../repositories/analysisRepository.js";
+import * as certificateRepo from "../repositories/certificateRepository.js";
 import { invokeLLM } from "../ia/llm.js";
 import { notifyOwner } from "../notification/notification.js";
+import * as emailService from "./emailService.js";
+import { emailTemplates } from "./emailTemplates.js";
 
 class AppError extends Error {
   statusCode: number;
@@ -18,27 +21,44 @@ class AppError extends Error {
 /**
  * Enviar notificação por email para aluno quando recebe créditos
  */
+/**
+ * Enviar notificação por email para aluno quando recebe créditos
+ */
 export async function notifyStudentCreditsReceived(
   studentId: number,
   eventName: string,
   credits: number,
   totalCredits: number
 ) {
-  const student = await studentRepo.getStudentById(studentId);
-  if (!student) return;
+  try {
+    const student = await studentRepo.getStudentById(studentId);
+    if (!student) return;
 
-  // Criar notificação no banco de dados
-  await notificationRepo.createNotification({
-  studentId,
-  tipo: "creditos_recebidos",
-  titulo: "Créditos Recebidos",
-  mensagem: `Você recebeu ${credits} créditos por participar do evento "${eventName}". Total acumulado: ${totalCredits}`,
-  enviado: false,
-  });
+    const template = emailTemplates.attendanceConfirmation({
+      studentName: student.nome,
+      eventName: eventName,
+      credits: credits,
+      totalCredits: totalCredits,
+    });
 
-  // Aqui ainda vai integrar com um serviço de email real
-  // Por enquanto, apenas registrar no banco
-  console.log(`[EMAIL] Notificação de créditos enviada para ${student.email ?? "email não informado"}`);
+    await emailService.sendEmail(
+      student.email || "",
+      template.subject,
+      template.html
+    );
+
+    // Criar notificação no banco
+    await notificationRepo.createNotification({
+      studentId,
+      tipo: "creditos_recebidos",
+      titulo: "Créditos Recebidos",
+      mensagem: `Você recebeu ${credits} créditos por participar do evento "${eventName}". Total acumulado: ${totalCredits}`,
+      enviado: true,
+      dataEnvio: new Date(),
+    });
+  } catch (error) {
+    console.error("[NOTIFICATION] Erro ao notificar créditos:", error);
+  }
 }
 
 /**
@@ -123,24 +143,24 @@ export async function registerAttendance(
     const attendanceResult = await attendanceRepo.createAttendance({
       studentId,
       eventId,
-      creditosRegistrados: eventCredits,
+      creditosRegistrados: event.creditos.toString(),
     });
 
     // ⚠️ IMPORTANTE: drizzle não retorna id direto
     // então não use attendance.id
-    const attendanceId = attendanceResult?.insertId ?? null;
+    const attendanceId = attendanceResult?.id ?? null;
 
     // 6. Atualizar créditos
     await studentRepo.updateStudent(studentId, {
-      creditosTotais: newTotal,
+      creditosTotais: newTotal.toString(),
     });
 
     // 7. Histórico
     await attendanceRepo.createCreditHistory({
       studentId,
       eventId,
-      creditosAdicionados: eventCredits,
-      creditosTotaisApos: newTotal,
+      creditosAdicionados: eventCredits.toString(),
+      creditosTotaisApos: newTotal.toString(),
       descricao: `Créditos recebidos no evento "${event.nome}"`,
     });
 
@@ -375,20 +395,194 @@ export async function sendPendingNotifications() {
       const student = await studentRepo.getStudentById(notification.studentId);
       if (!student) continue;
 
-      // Aqui você integraria com um serviço de email real
-      // Por enquanto, apenas marcamos como enviado
-      console.log(
-        `[EMAIL] Enviando: ${notification.titulo} para ${student.email ?? "email não informado"}`
-      );
+      if (student.email) {
+        const template = emailTemplates.generic({
+          title: notification.titulo,
+          studentName: student.nome,
+          message: notification.mensagem,
+        });
 
-      await notificationRepo.updateNotification(notification.id, {
-        enviado: true,
-        dataEnvio: new Date(),
-      });
+        const emailSent = await emailService.sendEmail(
+          student.email,
+          template.subject,
+          template.html
+        );
+
+        if (emailSent) {
+          await notificationRepo.updateNotification(notification.id, {
+            enviado: true,
+            dataEnvio: new Date(),
+          });
+        }
+      } else {
+        // Se não tem email, marca como enviado mesmo assim
+        await notificationRepo.updateNotification(notification.id, {
+          enviado: true,
+          dataEnvio: new Date(),
+        });
+      }
     }
 
-    console.log(`[NOTIFICATIONS] ${pendingNotifications.length} notificações enviadas`);
+    console.log(`[NOTIFICATIONS] ${pendingNotifications.length} notificações processadas`);
   } catch (error) {
     console.error("[NOTIFICATIONS] Erro ao enviar notificações:", error);
   }
+}
+
+/**
+ * Notifica aluno quando créditos estão baixos
+ */
+export async function notifyLowCredits(
+  studentId: number,
+  minimumRequired: number = 10
+) {
+  try {
+    const student = await studentRepo.getStudentById(studentId);
+    if (!student) return;
+
+    const currentCredits = parseFloat(student.creditosTotais.toString());
+
+    // Só notifica se realmente está baixo
+    if (currentCredits >= minimumRequired) return;
+
+    const template = emailTemplates.lowCreditsWarning({
+      studentName: student.nome,
+      currentCredits,
+      minimumRequired,
+      dashboardUrl: "https://seu-dominio.com/dashboard", // AJUSTE ISTO
+    } );
+
+    await emailService.sendEmail(
+      student.email || "",
+      template.subject,
+      template.html
+    );
+
+    // Criar notificação no banco
+    await notificationRepo.createNotification({
+      studentId,
+      tipo: "creditos_baixos",
+      titulo: "Aviso: Créditos Baixos",
+      mensagem: `Seus créditos (${currentCredits}) estão abaixo do mínimo recomendado (${minimumRequired})`,
+      enviado: true,
+      dataEnvio: new Date(),
+    });
+  } catch (error) {
+    console.error("[NOTIFICATION] Erro ao notificar créditos baixos:", error);
+  }
+}
+
+/**
+ * Notificar proprietário quando QR Code é inválido
+ */
+export async function notifyOwnerInvalidQRAttempt(
+  studentName: string,
+  eventName: string
+) {
+  try {
+    await emailService.notifyOwnerInvalidQR(
+      studentName,
+      eventName,
+      new Date()
+    );
+  } catch (error) {
+    console.error("[NOTIFICATION] Erro ao notificar proprietário sobre QR inválido:", error);
+  }
+}
+
+/**
+ * Notificar proprietário quando certificado falha
+ */
+export async function notifyOwnerCertificateError(
+  studentName: string,
+  eventName: string,
+  errorMessage: string
+) {
+  try {
+    await emailService.notifyOwnerCertificateFailure(
+      studentName,
+      eventName,
+      errorMessage
+    );
+  } catch (error) {
+    console.error("[NOTIFICATION] Erro ao notificar proprietário sobre falha de certificado:", error);
+  }
+}
+
+/**
+ * Notificar proprietário sobre evento com baixa participação
+ */
+export async function notifyOwnerLowParticipationEvent(
+  eventName: string,
+  participantCount: number
+) {
+  try {
+    await emailService.notifyOwnerLowParticipation(eventName, participantCount);
+  } catch (error) {
+    console.error("[NOTIFICATION] Erro ao notificar proprietário sobre baixa participação:", error);
+  }
+}
+
+/**
+ * Gerar e enviar resumo diário ao proprietário
+ */
+export async function sendOwnerDailySummary() {
+  try {
+    // Coletar estatísticas do dia
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    // Contar presenças de hoje
+    const allAttendances = await attendanceRepo.getAllAttendances();
+    const todayAttendances = allAttendances.filter((a: any) => {
+      const attendanceDate = new Date(a.timestamp);
+      return attendanceDate >= today && attendanceDate < tomorrow;
+    }).length;
+
+    // Contar certificados de hoje
+    const allCertificates =
+      await certificateRepo.getAllCertificates?.() || [];
+
+    const todayCertificates = allCertificates.filter((c: any) => {
+      const emissionDate = new Date(c.createdAt);
+
+      return emissionDate >= today && emissionDate < tomorrow;
+    }).length;
+
+    // Contar eventos
+    const events = await eventRepo.getAllEvents?.() || [];
+    const totalEvents = events.length;
+
+    // Top 5 alunos mais ativos
+    const students = await studentRepo.getAllStudents?.() || [];
+    const topStudents = await Promise.all(
+      students.map(async (s: any) => ({
+        name: s.nome,
+        participations: (await attendanceRepo.getAttendancesByStudent?.(s.id) || []).length,
+      }))
+    );
+    topStudents.sort((a, b) => b.participations - a.participations);
+
+    // Enviar email
+    await emailService.sendDailySummary(
+      todayAttendances,
+      todayCertificates,
+      totalEvents,
+      topStudents
+    );
+
+    console.log("[NOTIFICATION] Resumo diário enviado ao proprietário");
+  } catch (error) {
+    console.error("[NOTIFICATION] Erro ao enviar resumo diário:", error);
+  }
+}
+
+/**
+ * Testa a conexão com o servidor de email
+ */
+export async function testEmailConnection() {
+  return await emailService.testEmailConnection();
 }

@@ -205,18 +205,31 @@ export async function generateCertificatePDF(
  */
 export async function validateCertificate(validationCode: string) {
   try {
-    const certificates = await db.getCertificatesByStudent(0); // Get all
+    const certificate = await db.getCertificateByValidationCode(validationCode);
 
-    // Buscar certificado com o código de validação
-    // Nota: Esta é uma implementação simplificada
-    // Em produção, você faria uma query específica no banco
+    if (!certificate) {
+      return {
+        valid: false,
+        message: "Certificado não encontrado",
+      };
+    }
+
+    const student = await db.getStudentById(certificate.studentId);
+    const event = await db.getEventById(certificate.eventId);
 
     return {
       valid: true,
       message: "Certificado válido",
+      certificate: {
+        studentName: student?.nome || "Desconhecido",
+        eventName: event?.nome || "Desconhecido",
+        dataEmissao: certificate.dataEmissao,
+        certificateUrl: certificate.certificateUrl,
+      },
     };
   } catch (error) {
     console.error("[CERTIFICATE] Erro ao validar certificado:", error);
     throw error;
   }
 }
+

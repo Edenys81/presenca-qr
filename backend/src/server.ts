@@ -11,7 +11,18 @@ import { createContext } from "./trpc/context.js";
 import * as db from "./database/db.js";
 import cors from "cors";
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const PUBLIC_PATH = path.resolve(__dirname, "../public");
+const app = express();
+
+dotenv.config({ path: path.resolve(__dirname, "../.env") });
+
+console.log("[ENV] EMAIL_USER:", process.env.EMAIL_USER ? "✅ Configurado" : "❌ NÃO configurado");
+console.log("[ENV] EMAIL_PASSWORD:", process.env.EMAIL_PASSWORD ? "✅ Configurado" : "❌ NÃO configurado");
+console.log("[ENV] BUILT_IN_FORGE_API_URL:", process.env.BUILT_IN_FORGE_API_URL ? "✅ Configurado" : "❌ NÃO configurado");
+console.log("[ENV] BUILT_IN_FORGE_API_KEY:", process.env.BUILT_IN_FORGE_API_KEY ? "✅ Configurado" : "❌ NÃO configurado");
+
 if (!process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET não definido");
 }
@@ -24,12 +35,6 @@ if (!process.env.GOOGLE_CLIENT_SECRET) {
 if (!process.env.GOOGLE_CALLBACK_URL) {
   throw new Error("GOOGLE_CALLBACK_URL não definido");
 }
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const PUBLIC_PATH = path.resolve(__dirname, "../public");
-const app = express();
-
 
 app.use(
   cors({

@@ -1,18 +1,24 @@
-// Preconfigured storage helpers for Manus WebDev templates
-// Uses the Biz-provided storage proxy (Authorization: Bearer <token>)
+// Storage helpers with local fallback for development
+// Uses Manus Forge when credentials available, otherwise uses local filesystem
 
 import { ENV } from '../core/env.js';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-type StorageConfig = { baseUrl: string; apiKey: string };
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const STORAGE_DIR = path.resolve(__dirname, '../../storage');
+
+type StorageConfig = { baseUrl: string; apiKey: string } | null;
 
 function getStorageConfig(): StorageConfig {
   const baseUrl = ENV.forgeApiUrl;
   const apiKey = ENV.forgeApiKey;
 
   if (!baseUrl || !apiKey) {
-    throw new Error(
-      "Storage proxy credentials missing: set BUILT_IN_FORGE_API_URL and BUILT_IN_FORGE_API_KEY"
-    );
+    console.log('[STORAGE] Forge credentials missing, using local storage');
+    return null;
   }
 
   return { baseUrl: baseUrl.replace(/\/+$/, ""), apiKey };
@@ -67,36 +73,106 @@ function buildAuthHeaders(apiKey: string): HeadersInit {
   return { Authorization: `Bearer ${apiKey}` };
 }
 
+// Local storage functions
+async function ensureStorageDir(): Promise<void> {
+  try {
+    await fs.mkdir(STORAGE_DIR, { recursive: true });
+  } catch (error) {
+    console.error('[STORAGE] Erro ao criar diretório:', error);
+  }
+}
+
+async function saveLocal(
+  relKey: string,
+  data: Buffer | Uint8Array | string
+): Promise<string> {
+  await ensureStorageDir();
+  
+  const key = normalizeKey(relKey);
+  const filePath = path.join(STORAGE_DIR, key);
+  
+  // Criar diretórios necessários
+  const dir = path.dirname(filePath);
+  await fs.mkdir(dir, { recursive: true });
+  
+  // Salvar arquivo
+  if (typeof data === 'string') {
+    await fs.writeFile(filePath, data);
+  } else {
+    await fs.writeFile(filePath, Buffer.from(data));
+  }
+  
+  // Retornar URL local (relativa)
+  const url = `/storage/${key}`;
+  console.log('[STORAGE] Arquivo salvo localmente:', url);
+  return url;
+}
+
+async function getLocal(relKey: string): Promise<string> {
+  const key = normalizeKey(relKey);
+  return `/storage/${key}`;
+}
+
 export async function storagePut(
   relKey: string,
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream"
 ): Promise<{ key: string; url: string }> {
-  const { baseUrl, apiKey } = getStorageConfig();
+  const config = getStorageConfig();
   const key = normalizeKey(relKey);
-  const uploadUrl = buildUploadUrl(baseUrl, key);
-  const formData = toFormData(data, contentType, key.split("/").pop() ?? key);
-  const response = await fetch(uploadUrl, {
-    method: "POST",
-    headers: buildAuthHeaders(apiKey),
-    body: formData,
-  });
+  
+  if (config) {
+    // Usar Forge (S3 remoto)
+    try {
+      const uploadUrl = buildUploadUrl(config.baseUrl, key);
+      const fileName = key.split("/").pop() ?? key;
+      const formData = toFormData(data, contentType, fileName);
+      
+      const response = await fetch(uploadUrl, {
+        method: "POST",
+        headers: buildAuthHeaders(config.apiKey),
+        body: formData,
+      });
 
-  if (!response.ok) {
-    const message = await response.text().catch(() => response.statusText);
-    throw new Error(
-      `Storage upload failed (${response.status} ${response.statusText}): ${message}`
-    );
+      if (!response.ok) {
+        const message = await response.text().catch(() => response.statusText);
+        throw new Error(
+          `Storage upload failed (${response.status} ${response.statusText}): ${message}`
+        );
+      }
+      
+      const url = (await response.json()).url;
+      return { key, url };
+    } catch (error) {
+      console.warn('[STORAGE] Forge upload falhou, usando local:', error);
+      const url = await saveLocal(relKey, data);
+      return { key, url };
+    }
+  } else {
+    // Usar storage local
+    const url = await saveLocal(relKey, data);
+    return { key, url };
   }
-  const url = (await response.json()).url;
-  return { key, url };
 }
 
 export async function storageGet(relKey: string): Promise<{ key: string; url: string; }> {
-  const { baseUrl, apiKey } = getStorageConfig();
+  const config = getStorageConfig();
   const key = normalizeKey(relKey);
-  return {
-    key,
-    url: await buildDownloadUrl(baseUrl, key, apiKey),
-  };
+  
+  if (config) {
+    // Usar Forge (S3 remoto)
+    try {
+      const url = await buildDownloadUrl(config.baseUrl, key, config.apiKey);
+      return { key, url };
+    } catch (error) {
+      console.warn('[STORAGE] Forge download falhou, usando local:', error);
+      const url = await getLocal(relKey);
+      return { key, url };
+    }
+  } else {
+    // Usar storage local
+    const url = await getLocal(relKey);
+    return { key, url };
+  }
 }
+

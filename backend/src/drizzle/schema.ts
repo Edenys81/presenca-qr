@@ -133,7 +133,16 @@ export type InsertCertificate = typeof certificates.$inferInsert;
 export const notifications = mysqlTable("notifications", {
   id: int("id").autoincrement().primaryKey(),
   studentId: int("studentId").notNull().references(() => students.id, { onDelete: "cascade" }),
-  tipo: mysqlEnum("tipo", ["creditos_recebidos", "novo_evento", "certificado_disponivel"]).notNull(),
+  tipo: mysqlEnum("tipo", [
+    "creditos_recebidos",
+    "novo_evento",
+    "certificado_disponivel",
+    "creditos_baixos",
+    "baixa_participacao",
+    "resumo_diario",
+    "qr_invalido",
+    "erro_certificado"
+  ]).notNull(),
   titulo: varchar("titulo", { length: 255 }).notNull(),
   mensagem: text("mensagem").notNull(),
   enviado: boolean("enviado").default(false).notNull(),
@@ -149,7 +158,7 @@ export type InsertNotification = typeof notifications.$inferInsert;
  */
 export const analyses = mysqlTable("analyses", {
   id: int("id").autoincrement().primaryKey(),
-  tipo: mysqlEnum("tipo", ["frequencia", "padroes", "sugestoes"]).notNull(),
+  tipo: mysqlEnum("tipo", ["frequencia", "padroes", "sugestoes", "baixa_participacao"]).notNull(),
   conteudo: text("conteudo").notNull(),
   criadoPor: int("criadoPor").notNull().references(() => users.id, { onDelete: "cascade" }),
   dataGeracao: timestamp("dataGeracao").defaultNow().notNull(),

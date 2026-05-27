@@ -16,6 +16,7 @@ import {
 } from "../drizzle/schema.js";
 import { ENV } from "../core/env.js";
 
+type AnalysisType = typeof analyses.$inferSelect["tipo"];
 
 let _db: MySql2Database | null = null;
 
@@ -36,17 +37,6 @@ export async function getDb() {
   }
   return _db;
 }
-/* export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      _db = drizzle(process.env.DATABASE_URL);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
-  }
-  return _db;
-} */
 
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) {
@@ -109,7 +99,7 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 
 export async function getUserByOpenId(openId: string) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) throw new Error("Database not available");
 
   const result = await db
     .select()
@@ -122,7 +112,7 @@ export async function getUserByOpenId(openId: string) {
 
 export async function getUserById(id: number) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) throw new Error("Database not available");
 
   const result = await db
     .select()
@@ -137,7 +127,7 @@ export async function getUserById(id: number) {
 
 export async function getStudentByUserId(userId: number): Promise<Student | undefined> {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) throw new Error("Database not available");
 
   const result = await db
     .select()
@@ -150,7 +140,7 @@ export async function getStudentByUserId(userId: number): Promise<Student | unde
 
 export async function getStudentById(studentId: number): Promise<Student | undefined> {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) throw new Error("Database not available");
 
   const result = await db
     .select()
@@ -180,7 +170,6 @@ export async function updateStudent(
 
 export async function getAllStudents() {
   const db = await getDb();
-  // if (!db) return [];
   if (!db) throw new Error("Database not available");
 
   return db.select().from(students);
@@ -198,7 +187,7 @@ export async function createEvent(data: typeof events.$inferInsert) {
 
 export async function getEventById(eventId: number) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) throw new Error("Database not available");
 
   const result = await db
     .select()
@@ -206,12 +195,12 @@ export async function getEventById(eventId: number) {
     .where(eq(events.id, eventId))
     .limit(1);
 
-  return result.length > 0 ? result[0] : undefined;
+  return result[0];
 }
 
 export async function getEventByQrCodeId(qrCodeId: string) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) throw new Error("Database not available");
 
   const result = await db
     .select()
@@ -224,14 +213,14 @@ export async function getEventByQrCodeId(qrCodeId: string) {
 
 export async function getAllEvents() {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) throw new Error("Database not available");
 
   return db.select().from(events).orderBy(desc(events.createdAt));
 }
 
 export async function getActiveEvents() {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) throw new Error("Database not available");
 
   return db
     .select()
@@ -263,10 +252,14 @@ export async function createAttendance(data: typeof attendances.$inferInsert) {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
 
-  const result: any = await db.insert(attendances).values(data);
+  const result = await db.insert(attendances).values(data);
+
+  const insertResult = result as unknown as {
+    insertId: number;
+  };
 
   return {
-    id: result.insertId ?? null
+    id: insertResult.insertId
   };
 }
 
@@ -275,7 +268,7 @@ export async function getAttendanceByStudentAndEvent(
   eventId: number
 ) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) throw new Error("Database not available");
 
   const result = await db
     .select()
@@ -288,12 +281,12 @@ export async function getAttendanceByStudentAndEvent(
     )
     .limit(1);
 
-  return result.length > 0 ? result[0] : undefined;
+  return result[0];
 }
 
 export async function getAttendancesByEvent(eventId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) throw new Error("Database not available");
 
   return db
     .select()
@@ -304,12 +297,22 @@ export async function getAttendancesByEvent(eventId: number) {
 
 export async function getAttendancesByStudent(studentId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) throw new Error("Database not available");
 
   return db
     .select()
     .from(attendances)
     .where(eq(attendances.studentId, studentId))
+    .orderBy(desc(attendances.timestamp));
+}
+
+export async function getAllAttendances() {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .select()
+    .from(attendances)
     .orderBy(desc(attendances.timestamp));
 }
 
@@ -326,7 +329,7 @@ export async function createCreditHistory(
 
 export async function getCreditHistoryByStudent(studentId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) throw new Error("Database not available");
 
   return db
     .select()
@@ -348,7 +351,7 @@ export async function createCertificate(
 
 export async function getCertificateById(certificateId: number) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) throw new Error("Database not available");
 
   const result = await db
     .select()
@@ -356,12 +359,12 @@ export async function getCertificateById(certificateId: number) {
     .where(eq(certificates.id, certificateId))
     .limit(1);
 
-  return result.length > 0 ? result[0] : undefined;
+  return result[0];
 }
 
 export async function getCertificatesByStudent(studentId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) throw new Error("Database not available");
 
   return db
     .select()
@@ -372,7 +375,7 @@ export async function getCertificatesByStudent(studentId: number) {
 
 export async function getCertificateByAttendance(attendanceId: number) {
   const db = await getDb();
-  if (!db) return undefined;
+  if (!db) throw new Error("Database not available");
 
   const result = await db
     .select()
@@ -380,7 +383,18 @@ export async function getCertificateByAttendance(attendanceId: number) {
     .where(eq(certificates.attendanceId, attendanceId))
     .limit(1);
 
-  return result.length > 0 ? result[0] : undefined;
+  return result[0];
+}
+
+export async function getAllCertificates() {
+  const db = await getDb();
+
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .select()
+    .from(certificates)
+    .orderBy(desc(certificates.createdAt));
 }
 
 // ============ NOTIFICATION QUERIES ============
@@ -396,7 +410,7 @@ export async function createNotification(
 
 export async function getNotificationsByStudent(studentId: number) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) throw new Error("Database not available");
 
   return db
     .select()
@@ -407,7 +421,7 @@ export async function getNotificationsByStudent(studentId: number) {
 
 export async function getUnsentNotifications() {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) throw new Error("Database not available");
 
   return db
     .select()
@@ -437,28 +451,44 @@ export async function createAnalysis(data: typeof analyses.$inferInsert) {
   return db.insert(analyses).values(data);
 }
 
-export async function getAnalysesByType(tipo: string) {
+export async function getAnalysesByType(tipo: AnalysisType) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) throw new Error("Database not available");
 
   return db
     .select()
     .from(analyses)
-    .where(eq(analyses.tipo, tipo as any))
+    .where(eq(analyses.tipo, tipo))
     .orderBy(desc(analyses.dataGeracao));
 }
 
-export async function getLatestAnalyses() {
+export async function getLatestAnalyses(limit: number = 10) {
   const db = await getDb();
-  if (!db) return [];
+  if (!db) throw new Error("Database not available");
 
-  return db.select().from(analyses).orderBy(desc(analyses.dataGeracao)).limit(10);
+  return db.select().from(analyses).orderBy(desc(analyses.dataGeracao)).limit(limit);
+}
+
+export async function getCertificateByValidationCode(validationCode: string) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db
+    .select()
+    .from(certificates)
+    .where(eq(certificates.qrCodeValidacao, validationCode))
+    .limit(1);
+
+  return result[0];
 }
 
 export {
+  users,
   students,
   events,
   attendances,
   creditHistory,
-  notifications
+  notifications,
+  certificates,
+  analyses
 };

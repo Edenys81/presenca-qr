@@ -1,3 +1,7 @@
+import * as services from "../services/services.js";
+import * as emailService from "../services/emailService.js";
+import * as certificates from "../certificates/certificates.js";
+import * as analysisService from "../services/analysisService.js";
 import { eq, and } from "drizzle-orm";
 import { sql } from "drizzle-orm";
 import { COOKIE_NAME } from "../core/const.js";
@@ -9,7 +13,7 @@ import * as db from "../database/db.js";
 import { TRPCError } from "@trpc/server";
 import { v4 as uuidv4 } from "uuid";
 import QRCode from "qrcode";
-import { analysisRouter, certificateRouter, notificationRouter } from "./routers-extended.js";
+import { analysisRouter, certificateRouter, notificationRouter, ownerNotificationRouter } from "./routers-extended.js";
 
 export const appRouter = router({
   system: systemRouter,
@@ -126,10 +130,13 @@ export const appRouter = router({
       const enriched = await Promise.all(
         attendances.map(async (att) => {
           const event = await db.getEventById(att.eventId);
-          return { ...att, event };
+          return {
+            ...att,
+            timestamp: new Date(att.timestamp.getTime() + 3 * 60 * 60 * 1000),
+            event
+          };
         })
       );
-
       return enriched;
     }),
 
@@ -317,6 +324,15 @@ export const appRouter = router({
         const event = await db.getEventByQrCodeId(input.qrCodeId);
 
         if (!event) {
+          // Notificar proprietário sobre QR inválido
+          const student = await db.getStudentByUserId(ctx.user.id);
+          if (student) {
+            await services.notifyOwnerInvalidQRAttempt(
+              student.nome,
+              "Evento desconhecido"
+            );
+          }
+          
           throw new TRPCError({
             code: "NOT_FOUND",
             message: "Event not found for this QR code",
@@ -331,19 +347,6 @@ export const appRouter = router({
             message: "Student profile not found",
           });
         }
-
-       /* // Check if already registered
-        const existing = await db.getAttendanceByStudentAndEvent(
-          student.id,
-          event.id
-        );
-        if (existing) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "Already registered for this event",
-          });
-        }
-          */
 
         const dbConn = await db.getDb();
         if (!dbConn) {
@@ -419,6 +422,46 @@ export const appRouter = router({
           return parseFloat(newTotal);
         });
 
+        // Enviar email de presença registrada
+        try {
+          const eventDate = event.data instanceof Date 
+            ? event.data.toLocaleDateString("pt-BR") 
+            : new Date(event.data).toLocaleDateString("pt-BR");
+            
+          await emailService.sendAttendanceNotification(
+            student.email,
+            student.nome,
+            event.nome,
+            parseFloat(creditos),
+            totalCredits
+          );
+        } 
+        catch (emailError) {
+          console.error("[Email] Erro ao enviar email de presença:", emailError);
+        }
+
+        // Gerar certificado automaticamente
+        try {
+          const attendance = await db.getAttendanceByStudentAndEvent(student.id, event.id);
+          if (attendance) {
+            const certificate = await certificates.generateCertificatePDF(
+              student.id,
+              event.id,
+              attendance.id
+            );
+            
+            // Enviar email com certificado
+            await emailService.sendCertificateNotification(
+              student.email,
+              student.nome,
+              event.nome,
+              certificate.certificateUrl
+            );
+          }
+        } catch (certError) {
+          console.error("[CERTIFICATE] Erro ao gerar certificado:", certError);
+        }
+
         return {
           success: true,
           event,
@@ -437,6 +480,7 @@ export const appRouter = router({
 
   // Notification routes
   notification: notificationRouter,
+  ownerNotification: ownerNotificationRouter,
 
   admin: router({
     // Get all students (admin only)
@@ -490,4 +534,15 @@ export const appRouter = router({
   }),
 });
 
+
 export type AppRouter = typeof appRouter;
+
+testEmailConnection: adminProcedure.query(async () => {
+  const result = await services.testEmailConnection();
+  return {
+    success: result,
+    message: result
+      ? "✅ Conexão com email funcionando"
+      : "❌ Erro na conexão com email",
+  };
+})

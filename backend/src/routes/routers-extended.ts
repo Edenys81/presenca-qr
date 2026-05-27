@@ -21,6 +21,13 @@ export const analysisRouter = router({
     return analyses.length > 0 ? analyses[0] : null;
   }),
 
+  // Adicionar em analysisRouter (após getAllAnalyses):
+  getRecentAnalyses: adminProcedure
+    .input(z.object({ limit: z.number().default(5) }))
+    .query(async ({ input }) => {
+      return await db.getLatestAnalyses(input.limit);
+    }),
+
   // Buscar sugestões (última)
   getImprovementSuggestions: adminProcedure.query(async () => {
     const analyses = await db.getAnalysesByType("sugestoes");
@@ -30,34 +37,62 @@ export const analysisRouter = router({
   // Gerar análise de frequência (SALVA NO BANCO)
   generateFrequencyAnalysis: adminProcedure.mutation(async ({ ctx }) => {
     const analysis = await services.generateFrequencyAnalysis(ctx.user.id);
-
-    await db.createAnalysis({
-      tipo: "frequencia",
-      conteudo:
-        typeof analysis === "string"
-          ? analysis
-          : JSON.stringify(analysis),
-      criadoPor: ctx.user.id,
-    });
-
     return { success: true, analysis };
   }),
 
   // Gerar sugestões (AGORA SALVA NO BANCO)
   generateImprovementSuggestions: adminProcedure.mutation(async ({ ctx }) => {
     const suggestions = await services.generateImprovementSuggestions(ctx.user.id);
-
-    await db.createAnalysis({
-      tipo: "sugestoes",
-      conteudo:
-        typeof suggestions === "string"
-          ? suggestions
-          : JSON.stringify(suggestions),
-      criadoPor: ctx.user.id,
-    });
-
     return { success: true, suggestions };
   }),
+
+// Análise de baixa participação
+  generateLowParticipationAnalysis: adminProcedure.mutation(
+    async ({ ctx }) => {
+
+      const events = await db.getAllEvents();
+
+      const lowParticipationEvents = [];
+
+      for (const event of events) {
+
+        const attendances = await db.getAttendancesByEvent(event.id);
+
+        if (attendances.length < 5) {
+          lowParticipationEvents.push({
+            nome: event.nome,
+            totalParticipantes: attendances.length,
+          });
+        }
+      }
+
+      const analysis = `
+  Eventos com baixa participação:
+
+  ${
+    lowParticipationEvents.length === 0
+      ? "Nenhum evento com baixa participação."
+      : lowParticipationEvents
+          .map(
+            (e) =>
+              `- ${e.nome} (${e.totalParticipantes} participantes)`
+          )
+          .join("\n")
+  }
+  `;
+
+      await db.createAnalysis({
+        tipo: "padroes",
+        conteudo: analysis,
+        criadoPor: ctx.user.id,
+      });
+
+      return {
+        success: true,
+        analysis,
+      };
+    }
+  ),
 
   // Listar análises recentes
   getAllAnalyses: adminProcedure.query(async () => {
@@ -164,5 +199,14 @@ export const notificationRouter = router({
   sendPendingNotifications: adminProcedure.mutation(async () => {
     await services.sendPendingNotifications();
     return { success: true };
+  }),
+});
+
+// ============ OWNER NOTIFICATIONS ROUTER ============
+export const ownerNotificationRouter = router({
+  // Enviar resumo diário manualmente (admin only)
+  sendDailySummary: adminProcedure.mutation(async () => {
+    await services.sendOwnerDailySummary();
+    return { success: true, message: "Resumo diário enviado com sucesso" };
   }),
 });
