@@ -262,7 +262,7 @@ class SDKServer {
     const sessionCookie = cookies.get(COOKIE_NAME);
 
     if (typeof sessionCookie !== "string") {
-    throw ForbiddenError("Session cookie inválido");
+    throw ForbiddenError("Session cookie invalid");
     }
 
     const session = await this.verifySession(sessionCookie);

@@ -124,7 +124,7 @@ Responda em português de forma clara, estruturada e acionável.`;
       criadoPor: adminId,
     });
 
-    console.log("[ANALYSIS] ✅ Análise salva no banco com ID:", analysis.id);
+    console.log("[ANALYSIS] ✅ Análise salva no banco");
 
     // Notificar admin
     await notifyOwner({
@@ -148,7 +148,7 @@ export async function generateImprovementSuggestions(adminId: number) {
 
     const students = await studentRepo.getAllStudents();
     const events = await eventRepo.getAllEvents();
-    const analyses = await analysisRepo.getLatestAnalyses(5);
+    const analyses = await analysisRepo.getLatestAnalyses();
 
     if (students.length === 0 || events.length === 0) {
       console.warn("[ANALYSIS] Dados insuficientes para gerar sugestões");
@@ -232,12 +232,12 @@ Responda em português de forma clara, estruturada e acionável.`;
 
     // Salvar sugestões no banco de dados
     const analysis = await analysisRepo.createAnalysis({
-      tipo: "sugestoes_melhorias",
+      tipo: "sugestoes",
       conteudo: suggestionsContent,
       criadoPor: adminId,
     });
 
-    console.log("[ANALYSIS] ✅ Sugestões salvas no banco com ID:", analysis.id);
+    console.log("[ANALYSIS] ✅ Análise salva no banco");
 
     // Notificar admin
     await notifyOwner({
@@ -317,7 +317,7 @@ Gere sugestões para melhorar a participação nestes eventos específicos.`;
 
     // Salvar análise
     await analysisRepo.createAnalysis({
-      tipo: "eventos_baixa_participacao",
+      tipo: "baixa_participacao",
       conteudo: analysisContent,
       criadoPor: adminId,
     });
