@@ -287,7 +287,7 @@ if (process.env.NODE_ENV === "production") {
   
   // SPA fallback: redirecionar rotas desconhecidas para index.html
   // Mas não redirecionar APIs
-  app.get("*", (req, res) => {
+  app.use("*", (req, res) => {
     // Não redirecionar endpoints de API
     if (req.path.startsWith("/api") || req.path.startsWith("/auth") || req.path.startsWith("/trpc")) {
       return res.status(404).json({ error: "Not found" });
