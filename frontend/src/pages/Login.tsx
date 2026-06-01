@@ -13,7 +13,7 @@ function Login() {
   }
 
   const handleLogin = () => {
-    window.location.href = "http://localhost:3000/auth/google";
+    window.location.href = `${window.location.origin}/auth/google`;
   };
 
   return (
