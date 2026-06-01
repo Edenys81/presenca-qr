@@ -4,8 +4,6 @@ import * as eventRepo from "../repositories/eventRepository.js";
 import * as attendanceRepo from "../repositories/attendanceRepository.js";
 import * as analysisRepo from "../repositories/analysisRepository.js";
 import * as certificateRepo from "../repositories/certificateRepository.js";
-import { invokeLLM } from "../ia/llm.js";
-import { notifyOwner } from "../notification/notification.js";
 import * as emailService from "./emailService.js";
 import { emailTemplates } from "./emailTemplates.js";
 
@@ -209,7 +207,7 @@ export async function generateFrequencyAnalysis(adminId: number) {
     const events = await eventRepo.getAllEvents();
 
     // Coletar dados de participação
-    const participationData = await Promise.all(
+    const _participationData = await Promise.all(
       students.map(async (student) => {
         const attendances = await attendanceRepo.getAttendancesByStudent(student.id);
         return {
@@ -221,41 +219,6 @@ export async function generateFrequencyAnalysis(adminId: number) {
       })
     );
 
-    // Preparar prompt para LLM
-    const prompt = `Analise os seguintes dados de participação de alunos em eventos acadêmicos e gere insights sobre padrões de frequência:
-
-Dados de Participação:
-${JSON.stringify(participationData, null, 2)}
-
-Total de Eventos Disponíveis: ${events.length}
-
-Por favor, forneça:
-1. Padrões gerais de frequência
-2. Alunos com melhor e pior participação
-3. Sugestões de melhorias para aumentar a participação
-4. Recomendações para a secretaria
-
-Responda em português de forma clara e estruturada.`;
-/*
-    const response = await invokeLLM({
-      messages: [
-        {
-          role: "system",
-          content:
-            "Você é um analista de dados educacional especializado em análise de participação em eventos acadêmicos.",
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-    });
-
-    const analysisContent =
-      typeof response.choices[0]?.message?.content === "string"
-        ? response.choices[0].message.content
-        : "Análise não disponível";
-*/
     const analysisContent = `
     [ANÁLISE SIMULADA]
 
@@ -277,12 +240,6 @@ Responda em português de forma clara e estruturada.`;
       criadoPor: adminId
     });
 
-    /* Notificar secretaria
-    await notifyOwner({
-      title: "Análise de Frequência Gerada",
-      content: `Uma nova análise sobre padrões de frequência de alunos foi gerada. Acesse o painel administrativo para visualizar.`,
-    }); */
-
     return analysisContent;
   } catch (error) {
     console.error("[LLM] Erro ao gerar análise de frequência:", error);
@@ -296,8 +253,8 @@ Responda em português de forma clara e estruturada.`;
 export async function generateImprovementSuggestions(adminId: number) {
   try {
     const students = await studentRepo.getAllStudents();
-    const events = await eventRepo.getAllEvents();
-    const analyses = await analysisRepo.getLatestAnalyses();
+    const _events = await eventRepo.getAllEvents();
+    const _analyses = await analysisRepo.getLatestAnalyses();
 
     // Coletar estatísticas
     let totalParticipations = 0;
@@ -308,48 +265,9 @@ export async function generateImprovementSuggestions(adminId: number) {
       totalCreditsDistributed += parseFloat(student.creditosTotais ?? "0");
     }
 
-    const avgParticipationPerStudent =
+    const _avgParticipationPerStudent =
       students.length > 0 ? totalParticipations / students.length : 0;
 
-    const prompt = `Baseado nos seguintes dados do sistema de eventos acadêmicos, gere sugestões de melhorias:
-
-Estatísticas Gerais:
-- Total de Alunos: ${students.length}
-- Total de Eventos: ${events.length}
-- Total de Participações: ${totalParticipations}
-- Créditos Distribuídos: ${totalCreditsDistributed}
-- Média de Participações por Aluno: ${avgParticipationPerStudent.toFixed(2)}
-
-Análises Anteriores:
-${analyses.slice(0, 3).map((a) => a.conteudo).join("\n---\n")}
-
-Por favor, gere:
-1. 5 sugestões práticas para aumentar a participação
-2. Estratégias para melhorar a divulgação de eventos
-3. Recomendações de tipos de eventos mais atraentes
-4. Propostas para gamificação do sistema de créditos
-
-Responda em português de forma clara e acionável.`;
-/*
-    const response = await invokeLLM({
-      messages: [
-        {
-          role: "system",
-          content:
-            "Você é um consultor educacional especializado em engajamento de alunos em atividades acadêmicas.",
-        },
-        {
-          role: "user",
-          content: prompt,
-        },
-      ],
-    });
-
-    const suggestionsContent =
-      typeof response.choices[0]?.message?.content === "string"
-        ? response.choices[0].message.content
-        : "Sugestões não disponíveis";
-*/
     const suggestionsContent = `
     [SUGESTÕES SIMULADAS]
 
@@ -370,12 +288,6 @@ Responda em português de forma clara e acionável.`;
 
     // Notificar secretaria
     console.log("Notificação simulada");
-    /*
-    await notifyOwner({
-      title: "Sugestões de Melhorias Geradas",
-      content: `Novas sugestões para melhorar a participação dos alunos foram geradas. Acesse o painel administrativo para visualizar.`,
-    });
-    */
 
     return suggestionsContent;
   } catch (error) {

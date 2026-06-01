@@ -1,4 +1,14 @@
 {
+  "name": "presenca-qr",
+  "version": "1.0.0",
+  "description": "Sistema de Presença por QR Code",
+  "type": "module",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r build",
+    "start": "pnpm -w -C backend start",
+    "test": "pnpm -r test"
+  },
   "dependencies": {
     "html5-qrcode": "^2.3.8",
     "jsqr": "^1.4.0",

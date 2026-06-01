@@ -36,11 +36,17 @@ if (!process.env.GOOGLE_CALLBACK_URL) {
   throw new Error("GOOGLE_CALLBACK_URL não definido");
 }
 
+// ✅ MUDANÇA 1: CORS dinâmico baseado em FRONTEND_URL
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+const CORS_ORIGIN = process.env.NODE_ENV === "production" 
+  ? FRONTEND_URL 
+  : "http://localhost:5173";
+
 app.use(
   cors({
-    origin: "http://localhost:5173",
+    origin: CORS_ORIGIN,
     credentials: true,
-  })
+  } )
 );
 
 app.use(express.json());
@@ -54,11 +60,12 @@ app.use(
     resave: false,
     saveUninitialized: false,
     cookie: {
-      secure: false,
+      // ✅ MUDANÇA 2: secure: true em produção (HTTPS)
+      secure: process.env.NODE_ENV === "production",
       httpOnly: true,
       sameSite: "lax",
     }
-  })
+  } )
 );
 
 /* PASSPORT */
@@ -206,6 +213,7 @@ app.get(
 );
 
 // retorno do Google
+// ✅ MUDANÇA 3: Usar FRONTEND_URL dinâmico em redirects
 app.get(
   "/auth/google/callback",
   passport.authenticate("google", { failureRedirect: "/" }),
@@ -213,9 +221,9 @@ app.get(
     const user = (req as any).user;
 
     if (user?.role === "admin") {
-      res.redirect("http://localhost:5173/admin");
+      res.redirect(`${FRONTEND_URL}/admin`);
     } else {
-      res.redirect("http://localhost:5173/student");
+      res.redirect(`${FRONTEND_URL}/student`);
     }
   }
 );
@@ -242,6 +250,7 @@ app.get("/user", (req: Request, res: Response) => {
 
 /* LOGOUT */
 
+// ✅ MUDANÇA 4: Usar FRONTEND_URL dinâmico em logout
 app.get("/logout", (req, res, next) => {
   const sessionName = "presenca.qr.session";
 
@@ -249,7 +258,7 @@ app.get("/logout", (req, res, next) => {
     if (err) return next(err);
 
     if (!req.session) {
-      return res.redirect("http://localhost:5173/");
+      return res.redirect(`${FRONTEND_URL}/`);
     }
 
     req.session.destroy((err) => {
@@ -259,16 +268,42 @@ app.get("/logout", (req, res, next) => {
         path: "/",
         httpOnly: true,
         sameSite: "lax",
-        secure: false,
-      });
+        secure: process.env.NODE_ENV === "production",
+      } );
 
-      res.redirect("http://localhost:5173/");
+      res.redirect(`${FRONTEND_URL}/`);
     });
   });
 });
 
+/* ✅ MUDANÇA 5: SERVIR FRONTEND COMPILADO EM PRODUÇÃO */
+
+if (process.env.NODE_ENV === "production") {
+  // Caminho para o frontend compilado
+  const FRONTEND_DIST = path.join(__dirname, "../../frontend/dist");
+  
+  // Servir arquivos estáticos (CSS, JS, imagens, etc)
+  app.use(express.static(FRONTEND_DIST));
+  
+  // SPA fallback: redirecionar rotas desconhecidas para index.html
+  // Mas não redirecionar APIs
+  app.get("*", (req, res) => {
+    // Não redirecionar endpoints de API
+    if (req.path.startsWith("/api") || req.path.startsWith("/auth") || req.path.startsWith("/trpc")) {
+      return res.status(404).json({ error: "Not found" });
+    }
+    
+    // Redirecionar tudo mais para index.html (SPA)
+    res.sendFile(path.join(FRONTEND_DIST, "index.html"));
+  });
+}
+
 /* SERVIDOR */
 
-app.listen(3000, () => {
-  console.log("Servidor rodando em http://localhost:3000");
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, () => {
+  console.log(`Servidor rodando em http://localhost:${PORT}` );
+  console.log(`NODE_ENV: ${process.env.NODE_ENV}`);
+  console.log(`FRONTEND_URL: ${FRONTEND_URL}`);
 });

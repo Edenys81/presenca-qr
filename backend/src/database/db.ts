@@ -3,7 +3,6 @@ import { eq, and, desc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import { MySql2Database } from "drizzle-orm/mysql2";
 import {
-  InsertUser,
   users,
   students,
   events,
@@ -12,7 +11,10 @@ import {
   certificates,
   notifications,
   analyses,
-  Student
+} from "../drizzle/schema.js";
+import type {
+  InsertUser,
+  Student,
 } from "../drizzle/schema.js";
 import { ENV } from "../core/env.js";
 

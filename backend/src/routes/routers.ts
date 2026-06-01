@@ -1,11 +1,8 @@
 import * as services from "../services/services.js";
 import * as emailService from "../services/emailService.js";
 import * as certificates from "../certificates/certificates.js";
-import * as analysisService from "../services/analysisService.js";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { sql } from "drizzle-orm";
-import { COOKIE_NAME } from "../core/const.js";
-import { getSessionCookieOptions } from "../auth/cookies.js";
 import { systemRouter } from "../core/systemRouter.js";
 import { publicProcedure, router, protectedProcedure, adminProcedure } from "../trpc/trpc.js";
 import { z } from "zod";
@@ -424,10 +421,6 @@ export const appRouter = router({
 
         // Enviar email de presença registrada
         try {
-          const eventDate = event.data instanceof Date 
-            ? event.data.toLocaleDateString("pt-BR") 
-            : new Date(event.data).toLocaleDateString("pt-BR");
-            
           await emailService.sendAttendanceNotification(
             student.email,
             student.nome,

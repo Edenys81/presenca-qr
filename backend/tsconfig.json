@@ -1,14 +1,16 @@
 {
-  "compilerOptions": { 
-    "target": "ES2020", 
-    "module": "NodeNext", 
-    "rootDir": ".", 
-    "outDir": "./dist", 
-    "esModuleInterop": true, 
-    "moduleResolution": "NodeNext", 
-    "strict": false, 
-    "skipLibCheck": true 
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "NodeNext",
+    "rootDir": "src",
+    "outDir": "dist",
+    "esModuleInterop": true,
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "typeRoots": ["./node_modules/@types", "../types", "./src/types"],
+    "types": ["node", "express"]
   },
-  "include": ["src/**/*", "vitest.config.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src/**/*", "!src/tests/**/*"],
+  "exclude": ["node_modules", "dist", "src/tests"]
 }
