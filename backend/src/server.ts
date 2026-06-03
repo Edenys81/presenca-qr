@@ -280,7 +280,7 @@ app.get("/logout", (req, res, next) => {
 
 if (process.env.NODE_ENV === "production") {
   // Caminho para o frontend compilado
-  const FRONTEND_DIST = path.join(__dirname, "../../frontend/dist");
+  const FRONTEND_DIST = path.join(process.cwd(), "frontend/dist");
   
   // Servir arquivos estáticos (CSS, JS, imagens, etc)
   app.use(express.static(FRONTEND_DIST));
