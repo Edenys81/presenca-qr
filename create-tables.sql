@@ -1,0 +1,141 @@
+-- ============================================
+-- SCRIPT SQL COMPLETO - SISTEMA DE PRESENÇA QR
+-- ============================================
+-- Execute este script no MySQL do Railway para criar todas as tabelas
+
+-- ============ USERS TABLE ============
+CREATE TABLE IF NOT EXISTS `users` (
+  `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `openId` VARCHAR(64) NOT NULL UNIQUE,
+  `name` TEXT,
+  `email` VARCHAR(320),
+  `loginMethod` VARCHAR(64),
+  `role` ENUM('user', 'admin') NOT NULL DEFAULT 'user',
+  `createdAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `lastSignedIn` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============ STUDENTS TABLE ============
+CREATE TABLE IF NOT EXISTS `students` (
+  `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `userId` INT NOT NULL UNIQUE,
+  `matricula` VARCHAR(50) NOT NULL UNIQUE,
+  `nome` TEXT NOT NULL,
+  `email` VARCHAR(320) NOT NULL,
+  `curso` VARCHAR(255) NOT NULL,
+  `creditosTotais` DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  `createdAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT `students_userId_fk` FOREIGN KEY (`userId`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============ EVENTS TABLE ============
+CREATE TABLE IF NOT EXISTS `events` (
+  `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `nome` TEXT NOT NULL,
+  `descricao` TEXT,
+  `data` DATETIME NOT NULL,
+  `horario` VARCHAR(5) NOT NULL,
+  `local` VARCHAR(255) NOT NULL,
+  `cargaHoraria` DECIMAL(5, 2) NOT NULL,
+  `creditos` DECIMAL(5, 2) NOT NULL,
+  `qrCodeData` TEXT NOT NULL,
+  `qrCodeUrl` VARCHAR(2000),
+  `qrCodeId` VARCHAR(255) NOT NULL UNIQUE,
+  `ativo` BOOLEAN NOT NULL DEFAULT TRUE,
+  `criadoPor` INT NOT NULL,
+  `createdAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updatedAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT `events_criadoPor_fk` FOREIGN KEY (`criadoPor`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============ ATTENDANCES TABLE ============
+CREATE TABLE IF NOT EXISTS `attendances` (
+  `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `studentId` INT NOT NULL,
+  `eventId` INT NOT NULL,
+  `timestamp` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `creditosRegistrados` DECIMAL(5, 2) NOT NULL,
+  `createdAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY `unique_attendance` (`studentId`, `eventId`),
+  CONSTRAINT `attendances_studentId_fk` FOREIGN KEY (`studentId`) REFERENCES `students` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `attendances_eventId_fk` FOREIGN KEY (`eventId`) REFERENCES `events` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============ CREDIT HISTORY TABLE ============
+CREATE TABLE IF NOT EXISTS `creditHistory` (
+  `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `studentId` INT NOT NULL,
+  `eventId` INT NOT NULL,
+  `creditosAdicionados` DECIMAL(5, 2) NOT NULL,
+  `creditosTotaisApos` DECIMAL(10, 2) NOT NULL,
+  `descricao` TEXT,
+  `createdAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT `creditHistory_studentId_fk` FOREIGN KEY (`studentId`) REFERENCES `students` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `creditHistory_eventId_fk` FOREIGN KEY (`eventId`) REFERENCES `events` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============ CERTIFICATES TABLE ============
+CREATE TABLE IF NOT EXISTS `certificates` (
+  `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `studentId` INT NOT NULL,
+  `eventId` INT NOT NULL,
+  `attendanceId` INT NOT NULL,
+  `certificateUrl` TEXT NOT NULL,
+  `qrCodeValidacao` TEXT NOT NULL,
+  `dataEmissao` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `createdAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT `certificates_studentId_fk` FOREIGN KEY (`studentId`) REFERENCES `students` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `certificates_eventId_fk` FOREIGN KEY (`eventId`) REFERENCES `events` (`id`) ON DELETE CASCADE,
+  CONSTRAINT `certificates_attendanceId_fk` FOREIGN KEY (`attendanceId`) REFERENCES `attendances` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============ NOTIFICATIONS TABLE ============
+CREATE TABLE IF NOT EXISTS `notifications` (
+  `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `studentId` INT NOT NULL,
+  `tipo` ENUM(
+    'creditos_recebidos',
+    'novo_evento',
+    'certificado_disponivel',
+    'creditos_baixos',
+    'baixa_participacao',
+    'resumo_diario',
+    'qr_invalido',
+    'erro_certificado'
+  ) NOT NULL,
+  `titulo` VARCHAR(255) NOT NULL,
+  `mensagem` TEXT NOT NULL,
+  `enviado` BOOLEAN NOT NULL DEFAULT FALSE,
+  `dataEnvio` TIMESTAMP NULL,
+  `createdAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT `notifications_studentId_fk` FOREIGN KEY (`studentId`) REFERENCES `students` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============ ANALYSES TABLE ============
+CREATE TABLE IF NOT EXISTS `analyses` (
+  `id` INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `tipo` ENUM('frequencia', 'padroes', 'sugestoes', 'baixa_participacao') NOT NULL,
+  `conteudo` TEXT NOT NULL,
+  `criadoPor` INT NOT NULL,
+  `dataGeracao` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `createdAt` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT `analyses_criadoPor_fk` FOREIGN KEY (`criadoPor`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============ ÍNDICES ADICIONAIS ============
+CREATE INDEX `idx_students_userId` ON `students` (`userId`);
+CREATE INDEX `idx_events_criadoPor` ON `events` (`criadoPor`);
+CREATE INDEX `idx_attendances_studentId` ON `attendances` (`studentId`);
+CREATE INDEX `idx_attendances_eventId` ON `attendances` (`eventId`);
+CREATE INDEX `idx_creditHistory_studentId` ON `creditHistory` (`studentId`);
+CREATE INDEX `idx_creditHistory_eventId` ON `creditHistory` (`eventId`);
+CREATE INDEX `idx_certificates_studentId` ON `certificates` (`studentId`);
+CREATE INDEX `idx_certificates_eventId` ON `certificates` (`eventId`);
+CREATE INDEX `idx_certificates_attendanceId` ON `certificates` (`attendanceId`);
+CREATE INDEX `idx_notifications_studentId` ON `notifications` (`studentId`);
+CREATE INDEX `idx_analyses_criadoPor` ON `analyses` (`criadoPor`);
+
+-- ============ FIM DO SCRIPT ============
+-- Todas as tabelas foram criadas com sucesso!

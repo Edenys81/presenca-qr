@@ -167,3 +167,5 @@ export const analyses = mysqlTable("analyses", {
 
 export type Analysis = typeof analyses.$inferSelect;
 export type InsertAnalysis = typeof analyses.$inferInsert;
+
+// Fix: Database connection issue - v2
