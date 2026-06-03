@@ -293,6 +293,19 @@ if (process.env.NODE_ENV === "production") {
       return res.status(404).json({ error: "Not found" });
     }
     
+    // Proteger rotas específicas
+    if (req.path === "/admin" || req.path.startsWith("/admin/")) {
+      if (!(req as any).isAuthenticated() || (req as any).user?.role !== "admin") {
+        return res.redirect("/");
+      }
+    }
+    
+    if (req.path === "/student" || req.path.startsWith("/student/")) {
+      if (!(req as any).isAuthenticated()) {
+        return res.redirect("/");
+      }
+    }
+    
     // Redirecionar tudo mais para index.html (SPA)
     res.sendFile(path.join(FRONTEND_DIST, "index.html"));
   });
