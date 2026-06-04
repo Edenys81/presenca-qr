@@ -247,17 +247,6 @@ app.get("/user", (req: Request, res: Response) => {
   }
 });
 
-/* TESTE DE SESSÃO */
-
-app.get("/test-session", (req, res) => {
-  (req.session as any).teste = "ok";
-
-  res.json({
-    sessionID: req.sessionID,
-    session: req.session,
-  });
-});
-
 /* LOGOUT */
 
 // ✅ MUDANÇA 4: Usar FRONTEND_URL dinâmico em logout
@@ -290,8 +279,6 @@ app.get("/logout", (req, res, next) => {
 
 if (process.env.NODE_ENV === "production") {
   // Caminho para o frontend compilado
-  console.log("cwd =", process.cwd());
-  console.log("__dirname =", __dirname);
   const FRONTEND_DIST = path.resolve(__dirname, "../../frontend/dist");
   
   // Servir arquivos estáticos (CSS, JS, imagens, etc)
