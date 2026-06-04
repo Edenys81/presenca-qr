@@ -61,7 +61,7 @@ export const events = mysqlTable("events", {
   cargaHoraria: decimal("cargaHoraria", { precision: 5, scale: 2 }).notNull(),
   creditos: decimal("creditos", { precision: 5, scale: 2 }).notNull(),
   qrCodeData: text("qrCodeData").notNull(), // JSON string com dados do evento
-  qrCodeUrl: varchar("qrCodeUrl", { length: 2000 }),
+  qrCodeUrl: varchar("qrCodeUrl"),
   qrCodeId: varchar("qrCodeId", { length: 255 }).notNull().unique(),
   ativo: boolean("ativo").default(true).notNull(),
   criadoPor: int("criadoPor").notNull().references(() => users.id, { onDelete: "cascade" }),
