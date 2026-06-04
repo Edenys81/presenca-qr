@@ -16,6 +16,8 @@ const __dirname = path.dirname(__filename);
 const PUBLIC_PATH = path.resolve(__dirname, "../public");
 const app = express();
 
+app.set("trust proxy", 1);
+
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 console.log("[ENV] EMAIL_USER:", process.env.EMAIL_USER ? "✅ Configurado" : "❌ NÃO configurado");
@@ -59,13 +61,16 @@ app.use(
     secret: process.env.SESSION_SECRET!,
     resave: false,
     saveUninitialized: false,
+
+    proxy: true,
+
     cookie: {
-      // ✅ MUDANÇA 2: secure: true em produção (HTTPS)
       secure: process.env.NODE_ENV === "production",
       httpOnly: true,
       sameSite: "lax",
-    }
-  } )
+      maxAge: 1000 * 60 * 60 * 24 * 7,
+    },
+  })
 );
 
 /* PASSPORT */
@@ -217,14 +222,8 @@ app.get(
 app.get(
   "/auth/google/callback",
   passport.authenticate("google", { failureRedirect: "/" }),
-  (req: Request, res: Response) => {
-    const user = (req as any).user;
-
-    if (user?.role === "admin") {
-      res.redirect(`${FRONTEND_URL}/admin`);
-    } else {
-      res.redirect(`${FRONTEND_URL}/student`);
-    }
+  (req, res) => {
+    res.redirect(`${FRONTEND_URL}/`);
   }
 );
 
@@ -246,6 +245,17 @@ app.get("/user", (req: Request, res: Response) => {
   } else {
     res.status(401).json({ error: "Não autenticado" });
   }
+});
+
+/* TESTE DE SESSÃO */
+
+app.get("/test-session", (req, res) => {
+  (req.session as any).teste = "ok";
+
+  res.json({
+    sessionID: req.sessionID,
+    session: req.session,
+  });
 });
 
 /* LOGOUT */
@@ -280,6 +290,8 @@ app.get("/logout", (req, res, next) => {
 
 if (process.env.NODE_ENV === "production") {
   // Caminho para o frontend compilado
+  console.log("cwd =", process.cwd());
+  console.log("__dirname =", __dirname);
   const FRONTEND_DIST = path.resolve(__dirname, "../../frontend/dist");
   
   // Servir arquivos estáticos (CSS, JS, imagens, etc)
