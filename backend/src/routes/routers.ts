@@ -207,6 +207,7 @@ export const appRouter = router({
         })
       )
       .mutation(async ({ ctx, input }) => {
+      try {
         const qrCodeId = uuidv4();
 
         const payload = {
@@ -233,7 +234,13 @@ export const appRouter = router({
 
         //return event
         const event = await db.getEventByQrCodeId(qrCodeId);
+        console.log("EVENTO CRIADO:", event);
         return event;
+        
+        } catch (error) {
+          console.error("ERRO AO CRIAR EVENTO:", error);
+          throw error;
+        }
       }),
 
     // Update event (admin only)
