@@ -248,6 +248,48 @@ export async function deleteEvent(eventId: number) {
   return db.delete(events).where(eq(events.id, eventId));
 }
 
+// ============ EVENT QR CODE QUERIES ============
+
+export async function getEventQRCode(eventId: number) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const result = await db
+    .select()
+    .from(events)
+    .where(eq(events.id, eventId))
+    .limit(1);
+
+  if (!result[0]) {
+    return null;
+  }
+
+  return {
+    id: result[0].id,
+    nome: result[0].nome,
+    qrCodeUrl: result[0].qrCodeUrl,
+    qrCodeData: result[0].qrCodeData,
+    qrCodeId: result[0].qrCodeId,
+  };
+}
+
+export async function updateEventQRCode(
+  eventId: number,
+  qrCodeUrl: string,
+  qrCodeData: string
+) {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  return db
+    .update(events)
+    .set({
+      qrCodeUrl,
+      qrCodeData,
+    })
+    .where(eq(events.id, eventId));
+}
+
 // ============ ATTENDANCE QUERIES ============
 
 export async function createAttendance(data: typeof attendances.$inferInsert) {

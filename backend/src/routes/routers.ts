@@ -46,6 +46,7 @@ export const appRouter = router({
     }),
   }),
 
+
   // ============ STUDENT ROUTES ============
   student: router({
     // Get or create student profile
@@ -236,7 +237,7 @@ export const appRouter = router({
         const event = await db.getEventByQrCodeId(qrCodeId);
         console.log("EVENTO CRIADO:", event);
         return event;
-        
+
         } catch (error) {
           console.error("ERRO AO CRIAR EVENTO:", error);
           throw error;
@@ -312,7 +313,62 @@ export const appRouter = router({
         );
         return enriched;
       }),
+
+    // Get QR Code for event (admin only)
+    getQRCode: adminProcedure
+      .input(z.object({ eventId: z.number() }))
+      .query(async ({ input }) => {
+        const qrCode = await db.getEventQRCode(input.eventId);
+        if (!qrCode) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "QR Code not found for this event",
+          });
+        }
+        return qrCode;
+      }),
+
+    // Regenerate QR Code for event (admin only)
+    regenerateQRCode: adminProcedure
+      .input(z.object({ eventId: z.number() }))
+      .mutation(async ({ input }) => {
+        const event = await db.getEventById(input.eventId);
+        if (!event) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Event not found",
+          });
+        }
+
+        try {
+          const qrCodeId = event.qrCodeId || uuidv4();
+          const payload = {
+            qrCodeId,
+            timestamp: new Date().toISOString(),
+          };
+
+          const qrCodeData = JSON.stringify(payload);
+          const qrCodeUrl = await QRCode.toDataURL(qrCodeData);
+
+          await db.updateEventQRCode(input.eventId, qrCodeUrl, qrCodeData);
+
+          return {
+            success: true,
+            qrCodeUrl,
+            qrCodeData,
+          };
+        } catch (error) {
+          console.error("Error regenerating QR Code:", error);
+          throw new TRPCError({
+            code: "INTERNAL_SERVER_ERROR",
+            message: "Failed to regenerate QR Code",
+          });
+        }
+      }),
+      
   }),
+
+
 
   // ============ ATTENDANCE ROUTES ============
   attendance: router({

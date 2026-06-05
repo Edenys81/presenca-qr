@@ -202,9 +202,6 @@ importers:
       postcss:
         specifier: ^8.5.14
         version: 8.5.15
-      tailwindcss:
-        specifier: ^4.2.4
-        version: 4.3.0
       typescript:
         specifier: ~6.0.2
         version: 6.0.3
@@ -2136,9 +2133,6 @@ packages:
   tagged-tag@1.0.0:
     resolution: {integrity: sha512-yEFYrVhod+hdNyx7g5Bnkkb0G6si8HJurOoOEgC8B/O0uXLHlaey/65KRv6cuWBNhBgHKAROVpc7QyYqE5gFng==}
     engines: {node: '>=20'}
-
-  tailwindcss@4.3.0:
-    resolution: {integrity: sha512-y6nxMGB1nMW9R6k96e5gdIFzcfL/gTJRNaqGes1YvkLnPVXzWgbqFF2yLC0T8G774n24cx3Pe8XrKoniCOAH+Q==}
 
   text-segmentation@1.0.3:
     resolution: {integrity: sha512-iOiPUo/BGnZ6+54OsWxZidGCsdU8YbE4PSpdPinp7DeMtUJNJBoJ/ouUSTJjHkh1KntHaltHl/gDs2FC4i5+Nw==}
@@ -4220,8 +4214,6 @@ snapshots:
     optional: true
 
   tagged-tag@1.0.0: {}
-
-  tailwindcss@4.3.0: {}
 
   text-segmentation@1.0.3:
     dependencies:

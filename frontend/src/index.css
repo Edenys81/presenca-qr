@@ -848,3 +848,268 @@ body {
     flex-direction: column;
   }
 }
+
+/* ===== QR CODE MODAL ===== */
+
+/* Overlay escuro */
+.qrcode-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  z-index: 40;
+  cursor: pointer;
+}
+
+/* Container do modal */
+.qrcode-modal-container {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 16px;
+}
+
+/* Modal principal */
+.qrcode-modal {
+  background-color: white;
+  border-radius: 8px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+  max-width: 500px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+/* Header do modal */
+.qrcode-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 24px;
+  border-bottom: 1px solid #e5e7eb;
+  gap: 16px;
+}
+
+.qrcode-modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 0 0 8px 0;
+}
+
+.qrcode-modal-subtitle {
+  font-size: 14px;
+  color: #6b7280;
+  margin: 0;
+}
+
+/* Botão fechar */
+.qrcode-modal-close-btn {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.2s ease;
+  flex-shrink: 0;
+}
+
+.qrcode-modal-close-btn:hover:not(:disabled) {
+  color: #374151;
+}
+
+.qrcode-modal-close-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Conteúdo do modal */
+.qrcode-modal-content {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Container da imagem */
+.qrcode-modal-image-container {
+  display: flex;
+  justify-content: center;
+  background-color: #f9fafb;
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  min-height: 256px;
+  align-items: center;
+}
+
+/* Imagem do QR Code */
+.qrcode-modal-image {
+  max-width: 320px;
+  height: auto;
+  max-height: 320px;
+}
+
+/* Loading spinner */
+.qrcode-modal-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.qrcode-spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid #e5e7eb;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: qrcode-spin 1s linear infinite;
+}
+
+@keyframes qrcode-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Estado vazio */
+.qrcode-modal-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9ca3af;
+  font-size: 14px;
+}
+
+.qrcode-modal-empty p {
+  margin: 0;
+}
+
+/* Informações do evento */
+.qrcode-modal-info {
+  background-color: #eff6ff;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #bfdbfe;
+  font-size: 14px;
+  color: #1e40af;
+}
+
+.qrcode-modal-info p {
+  margin: 4px 0;
+}
+
+.qrcode-modal-info p:first-child {
+  margin-top: 0;
+}
+
+.qrcode-modal-info p:last-child {
+  margin-bottom: 0;
+}
+
+.qrcode-modal-info strong {
+  font-weight: 600;
+}
+
+/* Grid de botões */
+.qrcode-modal-buttons-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+/* Botões */
+.qrcode-modal-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: none;
+  font-family: inherit;
+}
+
+.qrcode-modal-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Botão outline (padrão) */
+.qrcode-modal-btn-outline {
+  border: 1px solid #d1d5db;
+  background-color: white;
+  color: #374151;
+}
+
+.qrcode-modal-btn-outline:hover:not(:disabled) {
+  background-color: #f9fafb;
+}
+
+.qrcode-modal-btn-outline:active:not(:disabled) {
+  background-color: #f3f4f6;
+}
+
+/* Botão secundário */
+.qrcode-modal-btn-secondary {
+  border: 1px solid #d1d5db;
+  background-color: #f3f4f6;
+  color: #374151;
+}
+
+.qrcode-modal-btn-secondary:hover:not(:disabled) {
+  background-color: #e5e7eb;
+}
+
+.qrcode-modal-btn-secondary:active:not(:disabled) {
+  background-color: #d1d5db;
+}
+
+/* Botão primário */
+.qrcode-modal-btn-primary {
+  background-color: #2563eb;
+  color: white;
+  border: 1px solid #2563eb;
+}
+
+.qrcode-modal-btn-primary:hover:not(:disabled) {
+  background-color: #1d4ed8;
+}
+
+.qrcode-modal-btn-primary:active:not(:disabled) {
+  background-color: #1e40af;
+}
+
+/* Responsivo */
+@media (max-width: 640px) {
+  .qrcode-modal {
+    max-width: 100%;
+  }
+
+  .qrcode-modal-header {
+    padding: 16px;
+  }
+
+  .qrcode-modal-content {
+    padding: 16px;
+  }
+
+  .qrcode-modal-buttons-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .qrcode-modal-image {
+    max-width: 250px;
+  }
+}

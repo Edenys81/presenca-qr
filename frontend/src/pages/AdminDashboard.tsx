@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { trpc } from "../lib/trpc";
 import { toast } from "sonner";
 import { useAuth } from "../auth/AuthProvider";
+import { QRCodeModal } from "../components/QRCodeModal";
 
 export default function AdminDashboard() {
   const { refetch } = useAuth();
@@ -10,6 +11,8 @@ export default function AdminDashboard() {
   const [isGeneratingAnalysis, setIsGeneratingAnalysis] = useState(false);
   const [selectedStudent, setSelectedStudent] = useState<any>(null);
   const [showStudentModal, setShowStudentModal] = useState(false);
+  const [showQRCodeModal, setShowQRCodeModal] = useState(false);
+  const [selectedEventForQR, setSelectedEventForQR] = useState<any>(null);
 
   type Analysis = {
     id: number;
@@ -50,8 +53,6 @@ export default function AdminDashboard() {
     },
   });
 
-
-
   const deleteEvent = trpc.event.delete.useMutation({
     onSuccess: () => {
       alert("Evento deletado!");
@@ -59,6 +60,21 @@ export default function AdminDashboard() {
     },
     onError: (err: any) => {
       alert(`Erro: ${err.message}`);
+    },
+  });
+
+    const getQRCode = trpc.event.getQRCode.useQuery(
+    { eventId: selectedEventForQR?.id || 0 },
+    { enabled: !!selectedEventForQR }
+  );
+
+  const regenerateQRCode = trpc.event.regenerateQRCode.useMutation({
+    onSuccess: () => {
+      toast.success("QR Code regenerado com sucesso!");
+      getQRCode.refetch();
+    },
+    onError: (err: any) => {
+      toast.error(`Erro: ${err.message}`);
     },
   });
 
@@ -152,12 +168,17 @@ export default function AdminDashboard() {
       return;
     }
 
-    const dateTime = new Date(`${form.data}T${form.horario}`);
+  const dateTime = new Date(`${form.data}T${form.horario}`);
 
     createEvent.mutate({
       ...form,
       data: dateTime,
     });
+  };
+
+  const handleShowQRCode = (event: any) => {
+    setSelectedEventForQR(event);
+    setShowQRCodeModal(true);
   };
 
   if (isLoading) {
@@ -564,6 +585,21 @@ export default function AdminDashboard() {
                           <td>{event.creditos}</td>
                           <td>{event.ativo ? "Ativo" : "Inativo"}</td>
                           <td>
+                                                        <button
+                              onClick={() => handleShowQRCode(event)}
+                              style={{
+                                padding: "4px 8px",
+                                backgroundColor: "#c8e6c9",
+                                color: "#1b5e20",
+                                border: "none",
+                                borderRadius: "4px",
+                                cursor: "pointer",
+                                fontSize: "12px",
+                                marginRight: "4px"
+                              }}
+                            >
+                              📱 QR Code
+                            </button>
                             <button
                               onClick={() => deleteEvent.mutate({ id: event.id })}
                               style={{
@@ -735,6 +771,22 @@ export default function AdminDashboard() {
           </div>
         </div>
       )}
+
+            {/* QR Code Modal */}
+      <QRCodeModal
+        isOpen={showQRCodeModal}
+        onClose={() => setShowQRCodeModal(false)}
+        qrCodeUrl={getQRCode.data?.qrCodeUrl || null}
+        eventName={selectedEventForQR?.nome || ""}
+        eventId={selectedEventForQR?.id || 0}
+        isLoading={getQRCode.isLoading}
+        onRegenerate={() => {
+          if (selectedEventForQR) {
+            regenerateQRCode.mutate({ eventId: selectedEventForQR.id });
+          }
+        }}
+      />
+
     </div>
   );
 }
