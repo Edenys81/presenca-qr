@@ -1,12 +1,16 @@
 import { useState } from "react";
 import { trpc } from "../lib/trpc";
 import { Scanner } from "@yudiel/react-qr-scanner";
+import { toast } from "sonner";
 import { useAuth } from "../auth/AuthProvider";
 
 export default function StudentDashboard() {
   const [qrCodeId, setQrCodeId] = useState("");
   const [cameraOpen, setCameraOpen] = useState(false);
   const [scanned, setScanned] = useState(false);
+  const [showCertificateModal, setShowCertificateModal] = useState(false);
+  const [certificateUrl, setCertificateUrl] = useState<string | null>(null);
+  const [studentEmail, setStudentEmail] = useState<string>("");
 
   const { refetch } = useAuth();
 
@@ -29,7 +33,13 @@ export default function StudentDashboard() {
 
   const registerPresence = trpc.attendance.registerByQRCode.useMutation({
     onSuccess: async (data) => {
-      alert(`Presença registrada! +${data.creditos} créditos`);
+      toast.success(`✅ Presença registrada! Você recebeu ${data.creditos} créditos.`);
+
+       if (data.certificateUrl) {
+        setCertificateUrl(data.certificateUrl);
+        setStudentEmail(profile?.email || "seu email");
+        setShowCertificateModal(true);
+      }
 
       await utils.student.getTotalCredits.invalidate();
       await utils.student.getAttendanceHistory.invalidate();
@@ -37,10 +47,18 @@ export default function StudentDashboard() {
       await utils.notification.getNotifications.invalidate();
       setQrCodeId("");
     },
-    onError: (err) => {
-      alert(err.message);
+    onError: (error: any) => {
+      // Verificar se é erro de presença duplicada
+      if (error.data?.code === "CONFLICT") {
+        toast.error("⚠️ Você já registrou presença neste evento!");
+      } else if (error.message?.includes("Already registered")) {
+        toast.error("⚠️ Você já registrou presença neste evento!");
+      } else {
+        toast.error(`❌ Erro: ${error.message}`);
+      }
     },
   });
+
 
   const logoutMutation = trpc.auth.logout.useMutation({
     onSuccess: async () => {
@@ -258,6 +276,56 @@ export default function StudentDashboard() {
                   </p>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Modal de Certificado */}
+        {showCertificateModal && certificateUrl && (
+          <div className="modal-overlay" onClick={() => setShowCertificateModal(false)}>
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+              <h2 className="modal-title">📜 Certificado Gerado</h2>
+              
+              <div className="modal-body">
+                <p style={{ marginBottom: "16px" }}>
+                  <strong>✅ Presença Registrada com Sucesso!</strong>
+                </p>
+
+                <div className="info-box" style={{ marginBottom: "16px", padding: "12px", backgroundColor: "#e8f5e9", borderLeft: "4px solid #4caf50", borderRadius: "4px" }}>
+                  <p style={{ margin: "0 0 8px 0", fontSize: "14px" }}>
+                    📧 <strong>Email Enviado</strong>
+                  </p>
+                  <p style={{ margin: "0", fontSize: "13px", color: "#555" }}>
+                    Um email com seu certificado foi enviado para: <strong>{studentEmail}</strong>
+                  </p>
+                </div>
+
+                <div className="info-box" style={{ padding: "12px", backgroundColor: "#fff3e0", borderLeft: "4px solid #ff9800", borderRadius: "4px" }}>
+                  <p style={{ margin: "0 0 8px 0", fontSize: "14px" }}>
+                    ⚠️ <strong>Não recebeu o email?</strong>
+                  </p>
+                  <p style={{ margin: "0 0 12px 0", fontSize: "13px", color: "#555" }}>
+                    Clique no botão "Baixar Certificado" abaixo para fazer o download direto.
+                  </p>
+
+                  <a
+                    href={certificateUrl}
+                    download
+                    className="btn btn-primary"
+                    style={{ width: "100%", textAlign: "center", textDecoration: "none", display: "block" }}
+                  >
+                    📥 Baixar Certificado
+                  </a>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShowCertificateModal(false)}
+                className="btn btn-secondary"
+                style={{ width: "100%", marginTop: "16px" }}
+              >
+                Fechar
+              </button>
             </div>
           </div>
         )}

@@ -22,12 +22,15 @@ function getTransporter(): nodemailer.Transporter {
   }
 
   transporter = nodemailer.createTransport({
-    service: "gmail",
+    host: "smtp.gmail.com",
+    port: 587,
+    secure: false,  // TLS em vez de SSL
     auth: {
       user: emailUser,
-      pass: emailPassword, // Usar App Password, não a senha da conta
+      pass: emailPassword,
     },
   });
+
 
   return transporter;
 }

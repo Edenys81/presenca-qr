@@ -365,7 +365,7 @@ export const appRouter = router({
           });
         }
       }),
-      
+
   }),
 
 
@@ -431,7 +431,7 @@ export const appRouter = router({
             if (err.code === "ER_DUP_ENTRY") {
               throw new TRPCError({
                 code: "CONFLICT",
-                message: "Already registered for this event",
+                message: "Aluno já registrado neste evento",
               });
             }
             throw err;
@@ -497,10 +497,11 @@ export const appRouter = router({
         }
 
         // Gerar certificado automaticamente
+        let certificate: any = null;
         try {
           const attendance = await db.getAttendanceByStudentAndEvent(student.id, event.id);
           if (attendance) {
-            const certificate = await certificates.generateCertificatePDF(
+            certificate = await certificates.generateCertificatePDF(
               student.id,
               event.id,
               attendance.id
@@ -523,6 +524,7 @@ export const appRouter = router({
           event,
           creditos: parseFloat(creditos),
           totalCredits,
+          certificateUrl: certificate?.certificateUrl || null,
         };
       }),
   }),
