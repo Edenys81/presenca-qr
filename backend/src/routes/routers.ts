@@ -418,6 +418,10 @@ export const appRouter = router({
 
         const creditos = event.creditos.toString();
 
+        // Criar timestamp em Brasília (UTC-3)
+        const now = new Date();
+        const brasiliaTime = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+
         const totalCredits = await dbConn.transaction(async (tx) => {
 
           // 1. Inserção protegida por índice único
@@ -426,6 +430,7 @@ export const appRouter = router({
               studentId: student.id,
               eventId: event.id,
               creditosRegistrados: creditos,
+              timestamp: brasiliaTime,
             });
           } catch (err: any) {
             if (err.code === "ER_DUP_ENTRY") {
@@ -482,21 +487,7 @@ export const appRouter = router({
           return parseFloat(newTotal);
         });
 
-        // Enviar email de presença registrada
-        try {
-          await emailService.sendAttendanceNotification(
-            student.email,
-            student.nome,
-            event.nome,
-            parseFloat(creditos),
-            totalCredits
-          );
-        } 
-        catch (emailError) {
-          console.error("[Email] Erro ao enviar email de presença:", emailError);
-        }
-
-        // Gerar certificado automaticamente
+        // Gerar certificado automaticamente (SÍNCRONO - deve terminar rápido)
         let certificate: any = null;
         try {
           const attendance = await db.getAttendanceByStudentAndEvent(student.id, event.id);
@@ -506,26 +497,45 @@ export const appRouter = router({
               event.id,
               attendance.id
             );
-            
-            // Enviar email com certificado
-            await emailService.sendCertificateNotification(
-              student.email,
-              student.nome,
-              event.nome,
-              certificate.certificateUrl
-            );
           }
         } catch (certError) {
           console.error("[CERTIFICATE] Erro ao gerar certificado:", certError);
         }
 
-        return {
+        // ← RETORNAR IMEDIATAMENTE (sem esperar email)
+        const response = {
           success: true,
           event,
           creditos: parseFloat(creditos),
           totalCredits,
           certificateUrl: certificate?.certificateUrl || null,
         };
+
+        // ← ENVIAR EMAILS EM BACKGROUND (não bloqueia resposta)
+        // Email de presença
+        emailService.sendAttendanceNotification(
+          student.email,
+          student.nome,
+          event.nome,
+          parseFloat(creditos),
+          totalCredits
+        ).catch(err => {
+          console.error("[EMAIL] Erro ao enviar email de presença em background:", err);
+        });
+
+        // Email de certificado
+        if (certificate?.certificateUrl) {
+          emailService.sendCertificateNotification(
+            student.email,
+            student.nome,
+            event.nome,
+            certificate.certificateUrl
+          ).catch(err => {
+            console.error("[EMAIL] Erro ao enviar email de certificado em background:", err);
+          });
+        }
+
+        return response;
       }),
   }),
 

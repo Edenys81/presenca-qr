@@ -12,25 +12,26 @@ function getTransporter(): nodemailer.Transporter {
     return transporter;
   }
 
-  const emailUser = ENV.emailUser;
-  const emailPassword = ENV.emailPassword;
+  const brevoSmtpHost = process.env.BREVO_SMTP_HOST;
+  const brevoSmtpPort = parseInt(process.env.BREVO_SMTP_PORT || "587");
+  const brevoSmtpUser = process.env.BREVO_SMTP_USER;
+  const brevoSmtpPassword = process.env.BREVO_SMTP_PASSWORD;
 
-  if (!emailUser || !emailPassword) {
+  if (!brevoSmtpHost || !brevoSmtpUser || !brevoSmtpPassword) {
     throw new Error(
-      "EMAIL_USER e EMAIL_PASSWORD não configurados no .env"
+      "BREVO_SMTP_HOST, BREVO_SMTP_USER e BREVO_SMTP_PASSWORD não configurados no .env"
     );
   }
 
   transporter = nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 587,
+    host: brevoSmtpHost,
+    port: brevoSmtpPort,
     secure: false,  // TLS em vez de SSL
     auth: {
-      user: emailUser,
-      pass: emailPassword,
+      user: brevoSmtpUser,
+      pass: brevoSmtpPassword,
     },
   });
-
 
   return transporter;
 }
