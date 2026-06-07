@@ -4,6 +4,7 @@ import passport from "passport";
 import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import path from "path";
 import { fileURLToPath } from "url";
+import fs from "fs";
 import dotenv from "dotenv";
 import * as trpcExpress from "@trpc/server/adapters/express";
 import { appRouter } from "./routes/routers.js";
@@ -281,6 +282,13 @@ if (process.env.NODE_ENV === "production") {
   // Caminho para o frontend compilado
   const FRONTEND_DIST = path.resolve(__dirname, "../../frontend/dist");
   
+  // Serve storage directory (certificates, uploads, etc.)
+  const STORAGE_PATH = path.join(__dirname, "../storage");
+  if (!fs.existsSync(STORAGE_PATH)) {
+    fs.mkdirSync(STORAGE_PATH, { recursive: true });
+  }
+  app.use("/storage", express.static(STORAGE_PATH));
+
   // Servir arquivos estáticos (CSS, JS, imagens, etc)
   app.use(express.static(FRONTEND_DIST));
   
