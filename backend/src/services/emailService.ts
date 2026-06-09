@@ -26,7 +26,7 @@ function getTransporter(): nodemailer.Transporter {
   transporter = nodemailer.createTransport({
     host: brevoSmtpHost,
     port: brevoSmtpPort,
-    secure: false,  // TLS em vez de SSL
+    secure: true,  // SSL
     auth: {
       user: brevoSmtpUser,
       pass: brevoSmtpPassword,
