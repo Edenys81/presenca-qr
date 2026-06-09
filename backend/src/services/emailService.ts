@@ -18,13 +18,19 @@ async function sendEmailViaBrevoAPI(
       return false;
     }
 
+    const emailFrom = ENV.emailFrom || ENV.emailUser;
+    if (!emailFrom) {
+      console.error("[EMAIL] EMAIL_USER ou EMAIL_FROM não configurado");
+      return false;
+    }
+
     const payload = {
       to: [{ email: to, name: toName }],
       subject,
       htmlContent: html,
       sender: {
         name: "Sistema de Presença",
-        email: "noreply@presenca-qr.com",
+        email: emailFrom,
       },
     };
 
@@ -103,7 +109,7 @@ export async function sendAttendanceNotification(
     </div>
   `;
 
-  return sendEmailViaBrevoAPI(studentEmail, studentName, subject, html);
+  return sendEmail(studentEmail, subject, html);
 }
 
 /**
@@ -148,7 +154,7 @@ export async function sendCertificateNotification(
     </div>
   `;
 
-  return sendEmailViaBrevoAPI(studentEmail, studentName, subject, html);
+  return sendEmail(studentEmail, subject, html);
 }
 
 /**
@@ -194,7 +200,7 @@ export async function sendLowCreditsNotification(
     </div>
   `;
 
-  return sendEmailViaBrevoAPI(studentEmail, studentName, subject, html);
+  return sendEmail(studentEmail, subject, html);
 }
 
 /**
@@ -241,7 +247,7 @@ export async function sendGenericNotification(
     </div>
   `;
 
-  return sendEmailViaBrevoAPI(studentEmail, studentName, subject, html);
+  return sendEmail(studentEmail, subject, html);
 }
 
 /**
@@ -251,6 +257,12 @@ export async function testEmailConnection(): Promise<boolean> {
   try {
     if (!BREVO_API_KEY) {
       console.error("[EMAIL] BREVO_API_KEY não configurado");
+      return false;
+    }
+
+    const emailFrom = ENV.emailFrom || ENV.emailUser;
+    if (!emailFrom) {
+      console.error("[EMAIL] EMAIL_USER ou EMAIL_FROM não configurado");
       return false;
     }
 
@@ -265,7 +277,7 @@ export async function testEmailConnection(): Promise<boolean> {
         to: [{ email: "test@example.com" }],
         subject: "Test",
         htmlContent: "Test",
-        sender: { name: "Test", email: "test@test.com" },
+        sender: { name: "Test", email: emailFrom },
       }),
     });
 
@@ -317,7 +329,7 @@ export async function notifyOwnerInvalidQR(
     </div>
   `;
 
-  return sendEmailViaBrevoAPI(ownerEmail, "Administrador", subject, html);
+  return sendEmail(ownerEmail, subject, html);
 }
 
 /**
@@ -354,7 +366,7 @@ export async function notifyOwnerCertificateFailure(
     </div>
   `;
 
-  return sendEmailViaBrevoAPI(ownerEmail, "Administrador", subject, html);
+  return sendEmail(ownerEmail, subject, html);
 }
 
 /**
@@ -393,7 +405,7 @@ export async function notifyOwnerLowParticipation(
     </div>
   `;
 
-  return sendEmailViaBrevoAPI(ownerEmail, "Administrador", subject, html);
+  return sendEmail(ownerEmail, subject, html);
 }
 
 /**
@@ -465,7 +477,7 @@ export async function sendDailySummary(
     </div>
   `;
 
-  return sendEmailViaBrevoAPI(ownerEmail, "Administrador", subject, html);
+  return sendEmail(ownerEmail, subject, html);
 }
 
 export default {
