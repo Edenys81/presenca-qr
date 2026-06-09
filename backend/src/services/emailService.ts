@@ -181,6 +181,12 @@ export async function sendLowCreditsNotification(
         
         <p>Recomendamos que você participe de mais eventos para acumular créditos.</p>
         
+        <p style="text-align: center; margin: 20px 0;">
+          <a href="https://seu-dominio.com/dashboard" style="background: linear-gradient(135deg, #ffa500 0%, #ff6b6b 100% ); color: white; padding: 12px 30px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">
+            Ver Eventos Disponíveis
+          </a>
+        </p>
+        
         <p style="color: #666; font-size: 12px; margin-top: 20px; border-top: 1px solid #ddd; padding-top: 10px;">
           Este é um email automático. Não responda a este email.
         </p>
@@ -239,6 +245,44 @@ export async function sendGenericNotification(
 }
 
 /**
+ * Testa a conexão com o servidor de email
+ */
+export async function testEmailConnection(): Promise<boolean> {
+  try {
+    if (!BREVO_API_KEY) {
+      console.error("[EMAIL] BREVO_API_KEY não configurado");
+      return false;
+    }
+
+    // Testa fazendo uma chamada simples à API
+    const response = await fetch(BREVO_API_URL, {
+      method: "POST",
+      headers: {
+        "api-key": BREVO_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        to: [{ email: "test@example.com" }],
+        subject: "Test",
+        htmlContent: "Test",
+        sender: { name: "Test", email: "test@test.com" },
+      }),
+    });
+
+    if (response.ok) {
+      console.log("[EMAIL] ✅ Conexão com Brevo API verificada com sucesso");
+      return true;
+    } else {
+      console.error("[EMAIL] ❌ Erro ao verificar conexão com Brevo API");
+      return false;
+    }
+  } catch (error) {
+    console.error("[EMAIL] ❌ Erro ao verificar conexão com Brevo API:", error);
+    return false;
+  }
+}
+
+/**
  * Envia notificação ao proprietário - QR Code Inválido
  */
 export async function notifyOwnerInvalidQR(
@@ -261,14 +305,13 @@ export async function notifyOwnerInvalidQR(
         
         <div style="background: white; padding: 15px; border-left: 4px solid #ff6b6b; margin: 15px 0;">
           <p style="margin: 5px 0;"><strong>Aluno:</strong> ${studentName}</p>
-          <p style="margin: 5px 0;"><strong>Evento Tentado:</strong> ${eventName}</p>
+          <p style="margin: 5px 0;"><strong>Evento:</strong> ${eventName}</p>
           <p style="margin: 5px 0;"><strong>Horário:</strong> ${attemptTime.toLocaleString("pt-BR")}</p>
+          <p style="margin: 5px 0;"><strong>Status:</strong> <span style="color: #ff6b6b; font-weight: bold;">❌ Bloqueado</span></p>
         </div>
         
-        <p>Verifique se há alguma atividade suspeita no sistema.</p>
-        
         <p style="color: #666; font-size: 12px; margin-top: 20px; border-top: 1px solid #ddd; padding-top: 10px;">
-          Este é um email automático de segurança.
+          Este é um email automático. Não responda a este email.
         </p>
       </div>
     </div>
@@ -276,3 +319,164 @@ export async function notifyOwnerInvalidQR(
 
   return sendEmailViaBrevoAPI(ownerEmail, "Administrador", subject, html);
 }
+
+/**
+ * Envia notificação ao proprietário - Falha de Certificado
+ */
+export async function notifyOwnerCertificateFailure(
+  studentName: string,
+  eventName: string,
+  errorMessage: string
+): Promise<boolean> {
+  const ownerEmail = process.env.ADMIN_EMAILS || ENV.emailUser;
+  
+  const subject = "🔴 Erro: Falha na Geração de Certificado";
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%); padding: 20px; border-radius: 8px 8px 0 0; color: white;">
+        <h2 style="margin: 0;">🔴 Erro Crítico</h2>
+      </div>
+      
+      <div style="background: #f5f5f5; padding: 20px; border-radius: 0 0 8px 8px;">
+        <p>Falha ao gerar certificado para um aluno.</p>
+        
+        <div style="background: white; padding: 15px; border-left: 4px solid #ff6b6b; margin: 15px 0;">
+          <p style="margin: 5px 0;"><strong>Aluno:</strong> ${studentName}</p>
+          <p style="margin: 5px 0;"><strong>Evento:</strong> ${eventName}</p>
+          <p style="margin: 5px 0;"><strong>Erro:</strong> <span style="color: #ff6b6b;">${errorMessage}</span></p>
+        </div>
+        
+        <p style="color: #666; font-size: 12px; margin-top: 20px; border-top: 1px solid #ddd; padding-top: 10px;">
+          Este é um email automático. Não responda a este email.
+        </p>
+      </div>
+    </div>
+  `;
+
+  return sendEmailViaBrevoAPI(ownerEmail, "Administrador", subject, html);
+}
+
+/**
+ * Envia notificação ao proprietário - Evento com Baixa Participação
+ */
+export async function notifyOwnerLowParticipation(
+  eventName: string,
+  participantCount: number,
+  minimumExpected: number = 5
+): Promise<boolean> {
+  const ownerEmail = process.env.ADMIN_EMAILS || ENV.emailUser;
+  
+  const subject = "⚠️ Evento com Baixa Participação";
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background: linear-gradient(135deg, #ffa500 0%, #ff8c00 100%); padding: 20px; border-radius: 8px 8px 0 0; color: white;">
+        <h2 style="margin: 0;">⚠️ Alerta Administrativo</h2>
+      </div>
+      
+      <div style="background: #f5f5f5; padding: 20px; border-radius: 0 0 8px 8px;">
+        <p>Um evento apresenta participação abaixo do esperado.</p>
+        
+        <div style="background: white; padding: 15px; border-left: 4px solid #ffa500; margin: 15px 0;">
+          <p style="margin: 5px 0;"><strong>Evento:</strong> ${eventName}</p>
+          <p style="margin: 5px 0;"><strong>Participantes:</strong> <span style="color: #ffa500; font-weight: bold;">${participantCount}</span></p>
+          <p style="margin: 5px 0;"><strong>Esperado:</strong> <span style="color: #ff8c00; font-weight: bold;">≥ ${minimumExpected}</span></p>
+        </div>
+        
+        <p>Considere revisar a divulgação do evento ou ajustar a data/horário.</p>
+        
+        <p style="color: #666; font-size: 12px; margin-top: 20px; border-top: 1px solid #ddd; padding-top: 10px;">
+          Este é um email automático. Não responda a este email.
+        </p>
+      </div>
+    </div>
+  `;
+
+  return sendEmailViaBrevoAPI(ownerEmail, "Administrador", subject, html);
+}
+
+/**
+ * Envia resumo diário ao proprietário
+ */
+export async function sendDailySummary(
+  totalAttendances: number,
+  totalCertificates: number,
+  totalEvents: number,
+  topStudents: Array<{ name: string; participations: number }>
+): Promise<boolean> {
+  const ownerEmail = process.env.ADMIN_EMAILS || ENV.emailUser;
+  
+  const subject = "📊 Resumo Diário - Sistema de Presença";
+  
+  const topStudentsHtml = topStudents
+    .slice(0, 5)
+    .map(
+      (s, i) =>
+        `<tr><td style="padding: 8px; border-bottom: 1px solid #ddd;">${i + 1}</td><td style="padding: 8px; border-bottom: 1px solid #ddd;">${s.name}</td><td style="padding: 8px; border-bottom: 1px solid #ddd; text-align: center;">${s.participations}</td></tr>`
+    )
+    .join("");
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 8px 8px 0 0; color: white;">
+        <h2 style="margin: 0;">📊 Resumo Diário</h2>
+        <p style="margin: 5px 0; font-size: 14px;">${new Date().toLocaleDateString("pt-BR")}</p>
+      </div>
+      
+      <div style="background: #f5f5f5; padding: 20px; border-radius: 0 0 8px 8px;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+          <div style="background: white; padding: 15px; border-radius: 5px; text-align: center; border-top: 4px solid #667eea;">
+            <p style="margin: 0; font-size: 12px; color: #666;">Presenças</p>
+            <p style="margin: 5px 0; font-size: 24px; font-weight: bold; color: #667eea;">${totalAttendances}</p>
+          </div>
+          
+          <div style="background: white; padding: 15px; border-radius: 5px; text-align: center; border-top: 4px solid #764ba2;">
+            <p style="margin: 0; font-size: 12px; color: #666;">Certificados</p>
+            <p style="margin: 5px 0; font-size: 24px; font-weight: bold; color: #764ba2;">${totalCertificates}</p>
+          </div>
+          
+          <div style="background: white; padding: 15px; border-radius: 5px; text-align: center; border-top: 4px solid #667eea;">
+            <p style="margin: 0; font-size: 12px; color: #666;">Eventos</p>
+            <p style="margin: 5px 0; font-size: 24px; font-weight: bold; color: #667eea;">${totalEvents}</p>
+          </div>
+        </div>
+        
+        <div style="background: white; padding: 15px; border-radius: 5px; margin-bottom: 15px;">
+          <h3 style="margin: 0 0 10px 0; color: #667eea;">🏆 Alunos Mais Ativos</h3>
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr style="background: #f5f5f5;">
+                <th style="padding: 8px; text-align: left; font-weight: bold;">#</th>
+                <th style="padding: 8px; text-align: left; font-weight: bold;">Aluno</th>
+                <th style="padding: 8px; text-align: center; font-weight: bold;">Participações</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${topStudentsHtml}
+            </tbody>
+          </table>
+        </div>
+        
+        <p style="color: #666; font-size: 12px; margin-top: 20px; border-top: 1px solid #ddd; padding-top: 10px;">
+          Este é um email automático. Não responda a este email.
+        </p>
+      </div>
+    </div>
+  `;
+
+  return sendEmailViaBrevoAPI(ownerEmail, "Administrador", subject, html);
+}
+
+export default {
+  sendEmail,
+  sendAttendanceNotification,
+  sendCertificateNotification,
+  sendLowCreditsNotification,
+  sendGenericNotification,
+  testEmailConnection,
+  notifyOwnerInvalidQR,
+  notifyOwnerCertificateFailure,
+  notifyOwnerLowParticipation,
+  sendDailySummary,
+};
