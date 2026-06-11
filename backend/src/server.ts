@@ -283,7 +283,7 @@ if (process.env.NODE_ENV === "production") {
   const FRONTEND_DIST = path.resolve(__dirname, "../../frontend/dist");
   
   // Serve storage directory (certificates, uploads, etc.)
-  const STORAGE_PATH = path.join(__dirname, "../storage");
+  const STORAGE_PATH = path.resolve(process.cwd(), "storage");
   if (!fs.existsSync(STORAGE_PATH)) {
     fs.mkdirSync(STORAGE_PATH, { recursive: true });
   }
