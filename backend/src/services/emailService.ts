@@ -1,7 +1,6 @@
 import { ENV } from "../core/env.js";
 
 const BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
-const BREVO_API_KEY = process.env.BREVO_API_KEY;
 
 /**
  * Envia email via Brevo API REST
@@ -13,6 +12,10 @@ async function sendEmailViaBrevoAPI(
   html: string
  ): Promise<boolean> {
   try {
+    const BREVO_API_KEY = process.env.BREVO_API_KEY;
+    // Force rebuild with EMAIL_FROM configuration
+    console.log("[EMAIL] Using sender:", process.env.EMAIL_FROM || process.env.EMAIL_USER);
+
     if (!BREVO_API_KEY) {
       console.error("[EMAIL] BREVO_API_KEY não configurado");
       return false;
@@ -255,6 +258,7 @@ export async function sendGenericNotification(
  */
 export async function testEmailConnection(): Promise<boolean> {
   try {
+    const BREVO_API_KEY = process.env.BREVO_API_KEY;
     if (!BREVO_API_KEY) {
       console.error("[EMAIL] BREVO_API_KEY não configurado");
       return false;
