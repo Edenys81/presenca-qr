@@ -103,14 +103,16 @@ async function saveLocal(
   }
   
   // Retornar URL local (relativa)
-  const url = `/storage/${key}`;
+  const baseUrl = process.env.APP_URL || process.env.RAILWAY_STATIC_URL || '';
+  const url = baseUrl ? `${baseUrl}/storage/${key}` : `/storage/${key}`;
   console.log('[STORAGE] Arquivo salvo localmente:', url);
   return url;
 }
 
 async function getLocal(relKey: string): Promise<string> {
   const key = normalizeKey(relKey);
-  return `/storage/${key}`;
+  const baseUrl = process.env.APP_URL || process.env.RAILWAY_STATIC_URL || '';
+  return baseUrl ? `${baseUrl}/storage/${key}` : `/storage/${key}`;
 }
 
 export async function storagePut(
