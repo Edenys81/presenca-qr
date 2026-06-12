@@ -82,7 +82,7 @@ export const analysisRouter = router({
   `;
 
       await db.createAnalysis({
-        tipo: "padroes",
+        tipo: "baixa_participacao",
         conteudo: analysis,
         criadoPor: ctx.user.id,
       });

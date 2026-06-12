@@ -90,8 +90,8 @@ export default function AdminDashboard() {
         refetchAnalyses();
       }
     },
-    onError: () => {
-      toast.error("❌ Erro ao gerar análise");
+    onError: (error) => {
+      toast.error(`❌ Erro ao gerar análise: ${error.message}`);
     }
   });
 

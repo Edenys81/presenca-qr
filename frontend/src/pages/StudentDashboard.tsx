@@ -57,6 +57,10 @@ export default function StudentDashboard() {
         toast.error(`❌ Erro: ${error.message}`);
       }
     },
+    onSettled: () => {
+      setScanned(false);
+      setCameraOpen(false);
+    },
   });
 
 
