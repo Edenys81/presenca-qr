@@ -145,12 +145,13 @@ Responda em português de forma clara, estruturada, com dados específicos e rec
     let analysisContent: string;
 
     try {
+      console.log("[ANALYSIS] 🤖 Chamando LLM para análise de frequência...");
       const response = await invokeLLM({
         messages: [
           {
             role: "system",
             content:
-              "Você é um analista de dados educacional especializado em análise de participação em eventos acadêmicos. Forneça análises detalhadas, baseadas em dados, e acionáveis. Sempre inclua números específicos e recomendações práticas.",
+              "Você é um analista de dados educacional especializado em análise de participação em eventos acadêmicos. Forneça análises detalhadas e acionáveis.",
           },
           {
             role: "user",
@@ -159,14 +160,24 @@ Responda em português de forma clara, estruturada, com dados específicos e rec
         ],
       });
 
+      console.log("[ANALYSIS] 📥 Resposta recebida do LLM", {
+        model: response.model,
+        choices: response.choices.length,
+        tokens: response.usage,
+      });
+
       analysisContent =
         typeof response.choices[0]?.message?.content === "string"
           ? response.choices[0].message.content
           : "Análise não disponível";
 
-      console.log("[ANALYSIS] ✅ Análise de frequência gerada com sucesso via LLM");
+      console.log("[ANALYSIS] ✅ Análise gerada com sucesso via LLM");
     } catch (llmError) {
-      console.warn("[ANALYSIS] ⚠️ Erro ao chamar LLM, usando análise simplificada", llmError);
+      console.error("[ANALYSIS] ❌ ERRO ao chamar LLM:", {
+        error: llmError instanceof Error ? llmError.message : String(llmError),
+        stack: llmError instanceof Error ? llmError.stack : undefined,
+      });
+      console.warn("[ANALYSIS] ⚠️ Usando análise simplificada como fallback");
 
       // Análise simplificada como fallback
       analysisContent = generateSimplifiedAnalysis(
@@ -307,12 +318,13 @@ Responda em português, de forma estruturada, com recomendações concretas e vi
     let suggestionsContent: string;
 
     try {
+      console.log("[ANALYSIS] 🤖 Chamando LLM para sugestões de melhorias...");
       const response = await invokeLLM({
         messages: [
           {
             role: "system",
             content:
-              "Você é um consultor educacional especializado em estratégias de engajamento estudantil. Forneça sugestões práticas, baseadas em dados, e acionáveis. Sempre justifique com números e dados específicos.",
+              "Você é um consultor educacional especializado em estratégias de engajamento estudantil. Forneça sugestões práticas e acionáveis.",
           },
           {
             role: "user",
@@ -321,14 +333,24 @@ Responda em português, de forma estruturada, com recomendações concretas e vi
         ],
       });
 
+      console.log("[ANALYSIS] 📥 Resposta recebida do LLM", {
+        model: response.model,
+        choices: response.choices.length,
+        tokens: response.usage,
+      });
+
       suggestionsContent =
         typeof response.choices[0]?.message?.content === "string"
           ? response.choices[0].message.content
           : "Sugestões não disponíveis";
 
-      console.log("[ANALYSIS] ✅ Sugestões de melhorias geradas com sucesso via LLM");
+      console.log("[ANALYSIS] ✅ Sugestões geradas com sucesso via LLM");
     } catch (llmError) {
-      console.warn("[ANALYSIS] ⚠️ Erro ao chamar LLM, usando sugestões simplificadas", llmError);
+      console.error("[ANALYSIS] ❌ ERRO ao chamar LLM:", {
+        error: llmError instanceof Error ? llmError.message : String(llmError),
+        stack: llmError instanceof Error ? llmError.stack : undefined,
+      });
+      console.warn("[ANALYSIS] ⚠️ Usando sugestões simplificadas como fallback");
 
       // Sugestões simplificadas como fallback
       suggestionsContent = generateSimplifiedSuggestions(
@@ -459,7 +481,11 @@ Responda em português, com recomendações específicas e acionáveis para cada
 
       console.log("[ANALYSIS] ✅ Análise de eventos com baixa participação gerada com sucesso");
     } catch (llmError) {
-      console.warn("[ANALYSIS] ⚠️ Erro ao chamar LLM, usando análise simplificada", llmError);
+      console.error("[ANALYSIS] ❌ ERRO ao chamar LLM:", {
+        error: llmError instanceof Error ? llmError.message : String(llmError),
+        stack: llmError instanceof Error ? llmError.stack : undefined,
+      });
+      console.warn("[ANALYSIS] ⚠️ Usando análise simplificada como fallback para eventos");
 
       analysisContent = `
 Eventos com Baixa Participação Identificados:
