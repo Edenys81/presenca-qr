@@ -212,13 +212,13 @@ const normalizeToolChoice = (
   return toolChoice;
 };
 
-// ✅ CORRIGIDO: Usar OpenAI API URL
-const resolveApiUrl = () => "https://api.openai.com/v1/chat/completions";
+// Usar Manus Forge API URL
+const resolveApiUrl = () => ENV.forgeApiUrl || "https://forge.manus.im/v1/chat/completions";
 
-// ✅ CORRIGIDO: Verificar OPENAI_API_KEY
-const assertApiKey = () => {
-  if (!ENV.openaiApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
+// ✅ Verificar MANUS_API_KEY
+const assertApiKey = ( ) => {
+  if (!ENV.forgeApiKey) {
+    throw new Error("BUILT_IN_FORGE_API_KEY is not configured");
   }
 };
 
@@ -282,8 +282,8 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   } = params;
 
   const payload: Record<string, unknown> = {
-    // ✅ CORRIGIDO: Usar modelo OpenAI (gpt-4o ou gpt-4-turbo)
-    model: "gpt-4o",
+    // Usar modelo Manus
+    model: "manus-1.6-lite",
     messages: messages.map(normalizeMessage),
   };
 
@@ -313,12 +313,12 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.response_format = normalizedResponseFormat;
   }
 
-  // Usar OpenAI API com Bearer token
+  // Usar Manus API com FORGE_API_kEY
   const response = await fetch(resolveApiUrl(), {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      authorization: `Bearer ${ENV.openaiApiKey}`,
+      "x-api-key": ENV.forgeApiKey,
     },
     body: JSON.stringify(payload),
   });
