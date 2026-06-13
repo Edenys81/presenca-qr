@@ -1,7 +1,7 @@
 import * as db from "../database/db.js";
 import { analyses } from "../drizzle/schema.js";
 
-type AnalysisType = typeof db.analyses.$inferSelect.tipo;
+type AnalysisType = typeof analyses.$inferSelect["tipo"];
 
 export async function createAnalysis(
   data: typeof analyses.$inferInsert
