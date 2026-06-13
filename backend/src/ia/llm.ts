@@ -213,7 +213,7 @@ const normalizeToolChoice = (
 };
 
 // Usar Manus Forge API URL
-const resolveApiUrl = () => ENV.forgeApiUrl || "https://forge.manus.im/v1/chat/completions";
+const resolveApiUrl = ( ) => ENV.forgeApiUrl || "https://api.manus.im";
 
 // ✅ Verificar MANUS_API_KEY
 const assertApiKey = ( ) => {
@@ -299,8 +299,13 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     payload.tool_choice = normalizedToolChoice;
   }
 
-  // ✅ CORRIGIDO: Remover configurações específicas do Gemini
+  // Remover configurações específicas do Manus
   payload.max_tokens = 2048;
+  payload.extra_body = {
+  task_mode: "agent",
+  agent_profile: "manus-1.6-lite",
+};
+
 
   const normalizedResponseFormat = normalizeResponseFormat({
     responseFormat,
@@ -318,7 +323,7 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "x-api-key": ENV.forgeApiKey,
+      "API_KEY": ENV.forgeApiKey,
     },
     body: JSON.stringify(payload),
   });
