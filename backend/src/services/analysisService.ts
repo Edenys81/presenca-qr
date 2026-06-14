@@ -2,11 +2,162 @@ import * as studentRepo from "../repositories/studentRepository.js";
 import * as eventRepo from "../repositories/eventRepository.js";
 import * as attendanceRepo from "../repositories/attendanceRepository.js";
 import * as analysisRepo from "../repositories/analysisRepository.js";
-import { invokeLLM } from "../ia/llm.js";
 import { notifyOwner } from "../notification/notification.js";
+import { ENV } from "../core/env.js";
+
+// ============ MANUS API TASK HELPER ============
+
+interface ManuTaskResponse {
+  id: string;
+  object: string;
+  status: "running" | "pending" | "completed" | "error";
+  model: string;
+  createdAt: string;
+  metadata?: {
+    credit_usage?: number;
+    task_url?: string;
+  };
+  output?: Array<{
+    id: string;
+    role: "user" | "assistant";
+    content: Array<{
+      type: string;
+      text?: string;
+    }>;
+  }>;
+  error?: {
+    code: string;
+    message: string;
+  };
+}
 
 /**
- * Gerar análises sobre frequência de alunos usando LLM
+ * Criar uma task no Manus e fazer polling até completar
+ */
+async function createAndPollManuTask(prompt: string, systemPrompt: string): Promise<string> {
+  try {
+    console.log("[ANALYSIS] 🚀 Criando task no Manus...");
+
+    // 1. CRIAR TASK
+    const createResponse = await fetch(`${ENV.forgeApiUrl}/v1/tasks`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "authorization": `Bearer ${ENV.forgeApiKey}`,
+      },
+      body: JSON.stringify({
+        input: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text: prompt,
+              },
+            ],
+          },
+        ],
+        extra_body: {
+          task_mode: "agent",
+          agent_profile: "manus-1.6-lite",
+        },
+        system_prompt: systemPrompt,
+      }),
+    });
+
+    if (!createResponse.ok) {
+      throw new Error(
+        `Falha ao criar task: ${createResponse.status} ${createResponse.statusText}`
+      );
+    }
+
+    const task = (await createResponse.json()) as ManuTaskResponse;
+    const taskId = task.id;
+
+    console.log(`[ANALYSIS] ✅ Task criada: ${taskId}`);
+    console.log(`[ANALYSIS] 📍 URL: ${task.metadata?.task_url || "N/A"}`);
+
+    // 2. FAZER POLLING ATÉ COMPLETAR
+    let currentTask = task;
+    let pollCount = 0;
+    const maxPolls = 120; // 120 * 5s = 10 minutos máximo
+    const pollInterval = 5000; // 5 segundos
+
+    while (
+      currentTask.status === "running" ||
+      currentTask.status === "pending"
+    ) {
+      if (pollCount >= maxPolls) {
+        throw new Error(
+          `Task expirou após ${maxPolls * (pollInterval / 1000)} segundos`
+        );
+      }
+
+      console.log(
+        `[ANALYSIS] ⏳ Aguardando... (${pollCount + 1}/${maxPolls}) Status: ${currentTask.status}`
+      );
+
+      // Aguardar antes de fazer polling
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+
+      // Fazer polling
+      const statusResponse = await fetch(
+        `${ENV.forgeApiUrl}/v1/tasks/${taskId}`,
+        {
+          method: "GET",
+          headers: {
+            "authorization": `Bearer ${ENV.forgeApiKey}`,
+          },
+        }
+      );
+
+      if (!statusResponse.ok) {
+        throw new Error(
+          `Falha ao verificar status: ${statusResponse.status} ${statusResponse.statusText}`
+        );
+      }
+
+      currentTask = (await statusResponse.json()) as ManuTaskResponse;
+      pollCount++;
+    }
+
+    // 3. VERIFICAR RESULTADO
+    if (currentTask.status === "error") {
+      throw new Error(
+        `Task retornou erro: ${currentTask.error?.message || "Erro desconhecido"}`
+      );
+    }
+
+    if (currentTask.status !== "completed") {
+      throw new Error(
+        `Status inesperado: ${currentTask.status}`
+      );
+    }
+
+    // 4. EXTRAIR CONTEÚDO DA RESPOSTA
+    const assistantMessage = currentTask.output?.find(
+      (msg) => msg.role === "assistant"
+    );
+    const textContent = assistantMessage?.content?.find(
+      (c) => c.type === "text"
+    );
+    const result = textContent?.text || "Análise não disponível";
+
+    console.log("[ANALYSIS] ✅ Task completada com sucesso!");
+    console.log(`[ANALYSIS] 💰 Créditos usados: ${currentTask.metadata?.credit_usage || "N/A"}`);
+
+    return result;
+  } catch (error) {
+    console.error("[ANALYSIS] ❌ Erro ao criar/fazer polling de task:", {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    throw error;
+  }
+}
+
+/**
+ * Gerar análises sobre frequência de alunos usando Manus API
  */
 export async function generateFrequencyAnalysis(adminId: number) {
   try {
@@ -23,9 +174,11 @@ export async function generateFrequencyAnalysis(adminId: number) {
     // Coletar dados de participação com análise temporal
     const participationData = await Promise.all(
       students.map(async (student) => {
-        const attendances = await attendanceRepo.getAttendancesByStudent(student.id);
+        const attendances = await attendanceRepo.getAttendancesByStudent(
+          student.id
+        );
         const credits = parseFloat(student.creditosTotais?.toString() ?? "0");
-        
+
         // Analisar padrão temporal
         const attendancesByMonth: Record<string, number> = {};
         attendances.forEach((att) => {
@@ -40,41 +193,62 @@ export async function generateFrequencyAnalysis(adminId: number) {
           totalCredits: credits,
           participations: attendances.length,
           email: student.email,
-          recentActivity: attendances.length > 0 
-            ? new Date(attendances[attendances.length - 1].timestamp).toLocaleDateString("pt-BR")
-            : "Sem participações",
+          recentActivity:
+            attendances.length > 0
+              ? new Date(
+                  attendances[attendances.length - 1].timestamp
+                ).toLocaleDateString("pt-BR")
+              : "Sem participações",
           monthlyPattern: attendancesByMonth,
         };
       })
     );
 
     // Calcular estatísticas avançadas
-    const totalParticipations = participationData.reduce((sum, s) => sum + s.participations, 0);
-    const avgParticipationPerStudent = 
+    const totalParticipations = participationData.reduce(
+      (sum, s) => sum + s.participations,
+      0
+    );
+    const avgParticipationPerStudent =
       students.length > 0 ? totalParticipations / students.length : 0;
-    
+
     const topStudents = participationData
       .sort((a, b) => b.participations - a.participations)
       .slice(0, 5);
-    
+
     const lowParticipationStudents = participationData
       .filter((s) => s.participations === 0)
       .slice(0, 5);
-    
+
     const moderateParticipationStudents = participationData
-      .filter((s) => s.participations > 0 && s.participations < avgParticipationPerStudent)
+      .filter(
+        (s) =>
+          s.participations > 0 &&
+          s.participations < avgParticipationPerStudent
+      )
       .slice(0, 5);
 
     // Analisar distribuição de créditos
-    const totalCreditsDistributed = participationData.reduce((sum, s) => sum + s.totalCredits, 0);
+    const totalCreditsDistributed = participationData.reduce(
+      (sum, s) => sum + s.totalCredits,
+      0
+    );
     const avgCreditsPerStudent = totalCreditsDistributed / students.length;
     const creditDistribution = {
-      above: participationData.filter(s => s.totalCredits > avgCreditsPerStudent * 1.5).length,
-      average: participationData.filter(s => s.totalCredits >= avgCreditsPerStudent * 0.5 && s.totalCredits <= avgCreditsPerStudent * 1.5).length,
-      below: participationData.filter(s => s.totalCredits < avgCreditsPerStudent * 0.5).length,
+      above: participationData.filter(
+        (s) => s.totalCredits > avgCreditsPerStudent * 1.5
+      ).length,
+      average: participationData.filter(
+        (s) =>
+          s.totalCredits >= avgCreditsPerStudent * 0.5 &&
+          s.totalCredits <= avgCreditsPerStudent * 1.5
+      ).length,
+      below: participationData.filter(
+        (s) => s.totalCredits < avgCreditsPerStudent * 0.5
+      ).length,
     };
 
-    // Preparar prompt ENRIQUECIDO para LLM
+    // Preparar prompt ENRIQUECIDO para Manus
     const prompt = `Você é um analista de dados educacional especializado em análise de participação em eventos acadêmicos. Forneça insights profundos e acionáveis.
 
 CONTEXTO DO SISTEMA:
@@ -91,25 +265,56 @@ DADOS GERAIS:
 - Média de Créditos por Aluno: ${avgCreditsPerStudent.toFixed(2)}
 
 DISTRIBUIÇÃO DE CRÉDITOS:
-- Alunos com Créditos Acima da Média: ${creditDistribution.above} (${((creditDistribution.above / students.length) * 100).toFixed(1)}%)
-- Alunos com Créditos na Média: ${creditDistribution.average} (${((creditDistribution.average / students.length) * 100).toFixed(1)}%)
-- Alunos com Créditos Abaixo da Média: ${creditDistribution.below} (${((creditDistribution.below / students.length) * 100).toFixed(1)}%)
+- Alunos com Créditos Acima da Média: ${creditDistribution.above} (${(
+      (creditDistribution.above / students.length) *
+      100
+    ).toFixed(1)}%)
+- Alunos com Créditos na Média: ${creditDistribution.average} (${(
+      (creditDistribution.average / students.length) *
+      100
+    ).toFixed(1)}%)
+- Alunos com Créditos Abaixo da Média: ${creditDistribution.below} (${(
+      (creditDistribution.below / students.length) *
+      100
+    ).toFixed(1)}%)
 
 TOP 5 ALUNOS COM MELHOR PARTICIPAÇÃO (ENGAJADOS):
-${topStudents.map((s) => `- ${s.name} (${s.course}): ${s.participations} eventos, ${s.totalCredits.toFixed(2)} créditos, última atividade: ${s.recentActivity}`).join("\n")}
+${topStudents
+  .map(
+    (s) =>
+      `- ${s.name} (${s.course}): ${s.participations} eventos, ${s.totalCredits.toFixed(2)} créditos, última atividade: ${s.recentActivity}`
+  )
+  .join("\n")}
 
 ALUNOS COM PARTICIPAÇÃO MODERADA (POTENCIAL DE CRESCIMENTO):
-${moderateParticipationStudents.length > 0 
-  ? moderateParticipationStudents.map((s) => `- ${s.name} (${s.course}): ${s.participations} eventos, ${s.totalCredits.toFixed(2)} créditos`).join("\n")
-  : "Nenhum aluno nesta categoria"}
+${
+  moderateParticipationStudents.length > 0
+    ? moderateParticipationStudents
+        .map(
+          (s) =>
+            `- ${s.name} (${s.course}): ${s.participations} eventos, ${s.totalCredits.toFixed(2)} créditos`
+        )
+        .join("\n")
+    : "Nenhum aluno nesta categoria"
+}
 
 ALUNOS SEM PARTICIPAÇÃO (CRÍTICO - REQUEREM INTERVENÇÃO):
-${lowParticipationStudents.length > 0 
-  ? lowParticipationStudents.map((s) => `- ${s.name} (${s.course})`).join("\n")
-  : "Todos os alunos participaram de pelo menos um evento"}
+${
+  lowParticipationStudents.length > 0
+    ? lowParticipationStudents
+        .map((s) => `- ${s.name} (${s.course})`)
+        .join("\n")
+    : "Todos os alunos participaram de pelo menos um evento"
+}
 
 PADRÃO TEMPORAL DE PARTICIPAÇÕES:
-${JSON.stringify(participationData.slice(0, 3).map(s => ({ name: s.name, monthlyPattern: s.monthlyPattern })), null, 2)}
+${JSON.stringify(
+  participationData
+    .slice(0, 3)
+    .map((s) => ({ name: s.name, monthlyPattern: s.monthlyPattern })),
+  null,
+  2
+)}
 
 ANÁLISE SOLICITADA:
 Forneça uma análise estruturada com:
@@ -141,46 +346,25 @@ Forneça uma análise estruturada com:
 
 Responda em português de forma clara, estruturada, com dados específicos e recomendações práticas que a secretaria possa implementar imediatamente.`;
 
-    // Chamar LLM
+    const systemPrompt =
+      "Você é um analista de dados educacional especializado em análise de participação em eventos acadêmicos. Forneça análises detalhadas e acionáveis.";
+
+    // Chamar Manus API com polling
     let analysisContent: string;
 
     try {
-      console.log("[ANALYSIS] 🤖 Chamando LLM para análise de frequência...");
-      const response = await invokeLLM({
-        messages: [
-          {
-            role: "system",
-            content:
-              "Você é um analista de dados educacional especializado em análise de participação em eventos acadêmicos. Forneça análises detalhadas e acionáveis.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
+      console.log("[ANALYSIS] 🤖 Chamando Manus API para análise de frequência...");
+      analysisContent = await createAndPollManuTask(prompt, systemPrompt);
+      console.log("[ANALYSIS] ✅ Análise gerada com sucesso via Manus");
+    } catch (apiError) {
+      console.error("[ANALYSIS] ❌ ERRO ao chamar Manus API:", {
+        error: apiError instanceof Error ? apiError.message : String(apiError),
+        stack: apiError instanceof Error ? apiError.stack : undefined,
       });
+      console.warn("[ANALYSIS] ⚠️ Usando análise calculada como fallback");
 
-      console.log("[ANALYSIS] 📥 Resposta recebida do LLM", {
-        model: response.model,
-        choices: response.choices.length,
-        tokens: response.usage,
-      });
-
-      analysisContent =
-        typeof response.choices[0]?.message?.content === "string"
-          ? response.choices[0].message.content
-          : "Análise não disponível";
-
-      console.log("[ANALYSIS] ✅ Análise gerada com sucesso via LLM");
-    } catch (llmError) {
-      console.error("[ANALYSIS] ❌ ERRO ao chamar LLM:", {
-        error: llmError instanceof Error ? llmError.message : String(llmError),
-        stack: llmError instanceof Error ? llmError.stack : undefined,
-      });
-      console.warn("[ANALYSIS] ⚠️ Usando análise simplificada como fallback");
-
-      // Análise simplificada como fallback
-      analysisContent = generateSimplifiedAnalysis(
+      // Análise calculada como fallback (COM AVISO)
+      analysisContent = generateCalculatedAnalysis(
         students.length,
         events.length,
         totalParticipations,
@@ -213,7 +397,7 @@ Responda em português de forma clara, estruturada, com dados específicos e rec
 }
 
 /**
- * Gerar sugestões de melhorias usando LLM
+ * Gerar sugestões de melhorias usando Manus API
  */
 export async function generateImprovementSuggestions(adminId: number) {
   try {
@@ -231,12 +415,21 @@ export async function generateImprovementSuggestions(adminId: number) {
     // Coletar estatísticas avançadas
     let totalParticipations = 0;
     let totalCreditsDistributed = 0;
-    const eventStats: Array<{ name: string; participations: number; credits: number; date: Date }> = [];
+    const eventStats: Array<{
+      name: string;
+      participations: number;
+      credits: number;
+      date: Date;
+    }> = [];
 
     for (const student of students) {
-      const attendances = await attendanceRepo.getAttendancesByStudent(student.id);
+      const attendances = await attendanceRepo.getAttendancesByStudent(
+        student.id
+      );
       totalParticipations += attendances.length;
-      totalCreditsDistributed += parseFloat(student.creditosTotais?.toString() ?? "0");
+      totalCreditsDistributed += parseFloat(
+        student.creditosTotais?.toString() ?? "0"
+      );
     }
 
     for (const event of events) {
@@ -255,11 +448,17 @@ export async function generateImprovementSuggestions(adminId: number) {
       students.length > 0 ? totalCreditsDistributed / students.length : 0;
 
     // Identificar eventos bem-sucedidos vs mal-sucedidos
-    const avgEventParticipation = eventStats.reduce((sum, e) => sum + e.participations, 0) / eventStats.length;
-    const successfulEvents = eventStats.filter(e => e.participations > avgEventParticipation).slice(0, 3);
-    const underperformingEvents = eventStats.filter(e => e.participations < avgEventParticipation).slice(0, 3);
+    const avgEventParticipation =
+      eventStats.reduce((sum, e) => sum + e.participations, 0) /
+      eventStats.length;
+    const successfulEvents = eventStats
+      .filter((e) => e.participations > avgEventParticipation)
+      .slice(0, 3);
+    const underperformingEvents = eventStats
+      .filter((e) => e.participations < avgEventParticipation)
+      .slice(0, 3);
 
-    // Preparar prompt ENRIQUECIDO para LLM
+    // Preparar prompt ENRIQUECIDO para Manus
     const prompt = `Você é um consultor educacional especializado em estratégias de engajamento estudantil e eventos acadêmicos.
 
 CONTEXTO:
@@ -276,13 +475,23 @@ ESTATÍSTICAS GERAIS DO SISTEMA:
 - Média de Créditos por Aluno: ${avgCreditsPerStudent.toFixed(2)}
 
 EVENTOS BEM-SUCEDIDOS (MODELO A REPLICAR):
-${successfulEvents.map((e) => `- ${e.name}: ${e.participations} participações, ${e.credits} créditos`).join("\n")}
+${successfulEvents
+  .map((e) => `- ${e.name}: ${e.participations} participações, ${e.credits} créditos`)
+  .join("\n")}
 
 EVENTOS COM BAIXO DESEMPENHO (REQUEREM AÇÃO):
-${underperformingEvents.map((e) => `- ${e.name}: ${e.participations} participações, ${e.credits} créditos`).join("\n")}
+${underperformingEvents
+  .map((e) => `- ${e.name}: ${e.participations} participações, ${e.credits} créditos`)
+  .join("\n")}
 
 ANÁLISES ANTERIORES (CONTEXTO):
-${analyses.slice(0, 2).map((a) => `- Tipo: ${a.tipo}, Data: ${new Date(a.createdAt).toLocaleDateString("pt-BR")}`).join("\n")}
+${analyses
+  .slice(0, 2)
+  .map(
+    (a) =>
+      `- Tipo: ${a.tipo}, Data: ${new Date(a.createdAt).toLocaleDateString("pt-BR")}`
+  )
+  .join("\n")}
 
 SUGESTÕES SOLICITADAS:
 
@@ -314,46 +523,25 @@ SUGESTÕES SOLICITADAS:
 
 Responda em português, de forma estruturada, com recomendações concretas e viáveis que a secretaria possa implementar. Inclua justificativas baseadas nos dados do sistema.`;
 
-    // Chamar LLM
+    const systemPrompt =
+      "Você é um consultor educacional especializado em estratégias de engajamento estudantil. Forneça sugestões práticas e acionáveis.";
+
+    // Chamar Manus API com polling
     let suggestionsContent: string;
 
     try {
-      console.log("[ANALYSIS] 🤖 Chamando LLM para sugestões de melhorias...");
-      const response = await invokeLLM({
-        messages: [
-          {
-            role: "system",
-            content:
-              "Você é um consultor educacional especializado em estratégias de engajamento estudantil. Forneça sugestões práticas e acionáveis.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
+      console.log("[ANALYSIS] 🤖 Chamando Manus API para sugestões de melhorias...");
+      suggestionsContent = await createAndPollManuTask(prompt, systemPrompt);
+      console.log("[ANALYSIS] ✅ Sugestões geradas com sucesso via Manus");
+    } catch (apiError) {
+      console.error("[ANALYSIS] ❌ ERRO ao chamar Manus API:", {
+        error: apiError instanceof Error ? apiError.message : String(apiError),
+        stack: apiError instanceof Error ? apiError.stack : undefined,
       });
+      console.warn("[ANALYSIS] ⚠️ Usando sugestões calculadas como fallback");
 
-      console.log("[ANALYSIS] 📥 Resposta recebida do LLM", {
-        model: response.model,
-        choices: response.choices.length,
-        tokens: response.usage,
-      });
-
-      suggestionsContent =
-        typeof response.choices[0]?.message?.content === "string"
-          ? response.choices[0].message.content
-          : "Sugestões não disponíveis";
-
-      console.log("[ANALYSIS] ✅ Sugestões geradas com sucesso via LLM");
-    } catch (llmError) {
-      console.error("[ANALYSIS] ❌ ERRO ao chamar LLM:", {
-        error: llmError instanceof Error ? llmError.message : String(llmError),
-        stack: llmError instanceof Error ? llmError.stack : undefined,
-      });
-      console.warn("[ANALYSIS] ⚠️ Usando sugestões simplificadas como fallback");
-
-      // Sugestões simplificadas como fallback
-      suggestionsContent = generateSimplifiedSuggestions(
+      // Sugestões calculadas como fallback (COM AVISO)
+      suggestionsContent = generateCalculatedSuggestions(
         students.length,
         events.length,
         avgParticipationPerStudent
@@ -383,7 +571,7 @@ Responda em português, de forma estruturada, com recomendações concretas e vi
 }
 
 /**
- * Gerar análise de eventos com baixa participação
+ * Gerar análise de eventos com baixa participação usando Manus API
  */
 export async function generateLowParticipationEventAnalysis(adminId: number) {
   try {
@@ -393,7 +581,9 @@ export async function generateLowParticipationEventAnalysis(adminId: number) {
 
     const eventStats = await Promise.all(
       events.map(async (event) => {
-        const attendances = await attendanceRepo.getAttendancesByEvent(event.id);
+        const attendances = await attendanceRepo.getAttendancesByEvent(
+          event.id
+        );
         return {
           id: event.id,
           name: event.nome,
@@ -415,7 +605,9 @@ export async function generateLowParticipationEventAnalysis(adminId: number) {
       return "Todos os eventos têm boa participação. Parabéns!";
     }
 
-    const avgParticipation = eventStats.reduce((sum, e) => sum + e.participations, 0) / eventStats.length;
+    const avgParticipation =
+      eventStats.reduce((sum, e) => sum + e.participations, 0) /
+      eventStats.length;
 
     const prompt = `Você é um especialista em eventos acadêmicos e engajamento estudantil.
 
@@ -424,14 +616,18 @@ CONTEXTO:
 - Programa: Tecnologia em Análise e Desenvolvimento de Sistemas
 
 EVENTOS COM BAIXA PARTICIPAÇÃO (ABAIXO DE 5 PARTICIPANTES):
-${lowParticipationEvents.map((e) => `
+${lowParticipationEvents
+  .map(
+    (e) => `
 - **${e.name}**
   Data: ${e.date.toLocaleDateString("pt-BR")}
   Local: ${e.location}
   Participações: ${e.participations}
   Créditos: ${e.credits}
   Descrição: ${e.description || "Não informada"}
-`).join("\n")}
+`
+  )
+  .join("\n")}
 
 MÉDIA DE PARTICIPAÇÃO POR EVENTO: ${avgParticipation.toFixed(2)}
 
@@ -457,47 +653,25 @@ ANÁLISE SOLICITADA:
 
 Responda em português, com recomendações específicas e acionáveis para cada evento.`;
 
+    const systemPrompt =
+      "Você é um especialista em eventos acadêmicos. Forneça análises diagnósticas e recomendações específicas para melhorar participação. Seja prático e acionável.";
+
     let analysisContent: string;
 
     try {
-      const response = await invokeLLM({
-        messages: [
-          {
-            role: "system",
-            content:
-              "Você é um especialista em eventos acadêmicos. Forneça análises diagnósticas e recomendações específicas para melhorar participação. Seja prático e acionável.",
-          },
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-      });
-
-      analysisContent =
-        typeof response.choices[0]?.message?.content === "string"
-          ? response.choices[0].message.content
-          : "Análise não disponível";
-
+      console.log("[ANALYSIS] 🤖 Chamando Manus API para análise de eventos com baixa participação...");
+      analysisContent = await createAndPollManuTask(prompt, systemPrompt);
       console.log("[ANALYSIS] ✅ Análise de eventos com baixa participação gerada com sucesso");
-    } catch (llmError) {
-      console.error("[ANALYSIS] ❌ ERRO ao chamar LLM:", {
-        error: llmError instanceof Error ? llmError.message : String(llmError),
-        stack: llmError instanceof Error ? llmError.stack : undefined,
+    } catch (apiError) {
+      console.error("[ANALYSIS] ❌ ERRO ao chamar Manus API:", {
+        error: apiError instanceof Error ? apiError.message : String(apiError),
+        stack: apiError instanceof Error ? apiError.stack : undefined,
       });
-      console.warn("[ANALYSIS] ⚠️ Usando análise simplificada como fallback para eventos");
+      console.warn("[ANALYSIS] ⚠️ Usando análise calculada como fallback para eventos");
 
-      analysisContent = `
-Eventos com Baixa Participação Identificados:
-
-${lowParticipationEvents.map((e) => `- ${e.name} (${e.date.toLocaleDateString("pt-BR")}): ${e.participations} participações`).join("\n")}
-
-Recomendações:
-1. Revisar data/horário dos eventos
-2. Melhorar divulgação e comunicação
-3. Considerar reformulação do tema ou formato
-4. Aumentar incentivo de créditos se apropriado
-      `;
+      analysisContent = generateCalculatedLowParticipationAnalysis(
+        lowParticipationEvents
+      );
     }
 
     // Salvar análise no banco de dados
@@ -517,14 +691,17 @@ Recomendações:
 
     return analysisContent;
   } catch (error) {
-    console.error("[ANALYSIS] ❌ Erro ao gerar análise de eventos com baixa participação:", error);
+    console.error(
+      "[ANALYSIS] ❌ Erro ao gerar análise de eventos com baixa participação:",
+      error
+    );
     throw error;
   }
 }
 
-// ============ FALLBACK FUNCTIONS (mantidas para compatibilidade) ============
+// ============ FALLBACK FUNCTIONS (Análises Calculadas com Aviso) ============
 
-function generateSimplifiedAnalysis(
+function generateCalculatedAnalysis(
   totalStudents: number,
   totalEvents: number,
   totalParticipations: number,
@@ -532,8 +709,11 @@ function generateSimplifiedAnalysis(
   topStudents: any[],
   lowParticipationStudents: any[]
 ): string {
-  return `
-ANÁLISE DE FREQUÊNCIA - RESUMO SIMPLIFICADO
+  return `⚠️ **AVISO: Esta análise foi gerada automaticamente com dados calculados, NÃO foi processada por IA.**
+
+---
+
+ANÁLISE DE FREQUÊNCIA - RESUMO CALCULADO
 
 Estatísticas Gerais:
 - Total de Alunos: ${totalStudents}
@@ -545,24 +725,33 @@ Alunos Engajados:
 ${topStudents.map((s) => `- ${s.name}: ${s.participations} participações`).join("\n")}
 
 Alunos sem Participação:
-${lowParticipationStudents.length > 0 
-  ? lowParticipationStudents.map((s) => `- ${s.name}`).join("\n")
-  : "Nenhum"}
+${
+  lowParticipationStudents.length > 0
+    ? lowParticipationStudents.map((s) => `- ${s.name}`).join("\n")
+    : "Nenhum"
+}
 
-Recomendações:
+Recomendações Básicas:
 1. Manter engajamento dos alunos com alta participação
 2. Incentivar alunos com baixa participação
 3. Diversificar tipos de eventos
+
+---
+
+*Para uma análise completa com insights de IA, tente gerar novamente.*
   `;
 }
 
-function generateSimplifiedSuggestions(
+function generateCalculatedSuggestions(
   totalStudents: number,
   totalEvents: number,
   avgParticipation: number
 ): string {
-  return `
-SUGESTÕES DE MELHORIAS - RESUMO SIMPLIFICADO
+  return `⚠️ **AVISO: Estas sugestões foram geradas automaticamente com dados calculados, NÃO foram processadas por IA.**
+
+---
+
+SUGESTÕES DE MELHORIAS - RESUMO CALCULADO
 
 Estatísticas:
 - Alunos: ${totalStudents}
@@ -580,11 +769,35 @@ Próximos Passos:
 - Escolher 2-3 sugestões para implementar
 - Medir impacto em 2-4 semanas
 - Ajustar conforme necessário
+
+---
+
+*Para sugestões estratégicas com IA, tente gerar novamente.*
   `;
 }
 
-export default {
-  generateFrequencyAnalysis,
-  generateImprovementSuggestions,
-  generateLowParticipationEventAnalysis,
-};
+function generateCalculatedLowParticipationAnalysis(lowParticipationEvents: any[]): string {
+  return `⚠️ **AVISO: Esta análise foi gerada automaticamente com dados calculados, NÃO foi processada por IA.**
+
+---
+
+Eventos com Baixa Participação Identificados:
+
+${lowParticipationEvents
+  .map(
+    (e) =>
+      `- ${e.name} (${e.date.toLocaleDateString("pt-BR")}): ${e.participations} participações`
+  )
+  .join("\n")}
+
+Recomendações Básicas:
+1. Revisar data/horário dos eventos
+2. Melhorar divulgação e comunicação
+3. Considerar reformulação do tema ou formato
+4. Aumentar incentivo de créditos se apropriado
+
+---
+
+*Para uma análise diagnóstica completa com IA, tente gerar novamente.*
+  `;
+}
