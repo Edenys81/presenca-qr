@@ -319,11 +319,11 @@ export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
   }
 
   // Usar Manus API com FORGE_API_kEY
-  const response = await fetch(resolveApiUrl(), {
+  const response = await fetch(`${resolveApiUrl()}/v1/chat/completions`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      "API_KEY": ENV.forgeApiKey,
+      "authorization": `Bearer ${ENV.forgeApiKey}`,
     },
     body: JSON.stringify(payload),
   });
