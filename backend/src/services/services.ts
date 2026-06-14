@@ -2,10 +2,10 @@ import * as studentRepo from "../repositories/studentRepository.js";
 import * as notificationRepo from "../repositories/notificationRepository.js";
 import * as eventRepo from "../repositories/eventRepository.js";
 import * as attendanceRepo from "../repositories/attendanceRepository.js";
-import * as analysisRepo from "../repositories/analysisRepository.js";
 import * as certificateRepo from "../repositories/certificateRepository.js";
 import * as emailService from "./emailService.js";
 import { emailTemplates } from "./emailTemplates.js";
+import * as analysisService from "./analysisService.js";
 
 class AppError extends Error {
   statusCode: number;
@@ -195,104 +195,6 @@ export async function registerAttendance(
       message: "Erro interno ao registrar presença",
       statusCode: 500,
     };
-  }
-}
-
-/**
- * Gerar análises sobre frequência de alunos usando LLM
- */
-export async function generateFrequencyAnalysis(adminId: number) {
-  try {
-    const students = await studentRepo.getAllStudents();
-    const events = await eventRepo.getAllEvents();
-
-    // Coletar dados de participação
-    const _participationData = await Promise.all(
-      students.map(async (student) => {
-        const attendances = await attendanceRepo.getAttendancesByStudent(student.id);
-        return {
-          name: student.nome,
-          course: student.curso,
-          totalCredits: parseFloat(student.creditosTotais ?? "0"),
-          participations: attendances.length,
-        };
-      })
-    );
-
-    const analysisContent = `
-    [ANÁLISE SIMULADA]
-
-    Total de alunos: ${students.length}
-    Total de eventos: ${events.length}
-
-    Resumo:
-    - Sistema funcionando corretamente
-    - Coleta de dados operacional
-    - Integração com banco OK
-
-    (LLM desativado para testes)
-    `;
-
-    // Salvar análise no banco de dados
-    await analysisRepo.createAnalysis({
-      tipo: "frequencia",
-      conteudo: analysisContent,
-      criadoPor: adminId
-    });
-
-    return analysisContent;
-  } catch (error) {
-    console.error("[LLM] Erro ao gerar análise de frequência:", error);
-    throw error;
-  }
-}
-
-/**
- * Gerar sugestões de melhorias usando LLM
- */
-export async function generateImprovementSuggestions(adminId: number) {
-  try {
-    const students = await studentRepo.getAllStudents();
-    const _events = await eventRepo.getAllEvents();
-    const _analyses = await analysisRepo.getLatestAnalyses();
-
-    // Coletar estatísticas
-    let totalParticipations = 0;
-    let totalCreditsDistributed = 0;
-
-    for (const student of students) {
-      totalParticipations += (await attendanceRepo.getAttendancesByStudent(student.id)).length;
-      totalCreditsDistributed += parseFloat(student.creditosTotais ?? "0");
-    }
-
-    const _avgParticipationPerStudent =
-      students.length > 0 ? totalParticipations / students.length : 0;
-
-    const suggestionsContent = `
-    [SUGESTÕES SIMULADAS]
-
-    1. Melhorar divulgação dos eventos
-    2. Criar sistema de ranking de participação
-    3. Oferecer bônus por frequência
-    4. Enviar notificações automáticas
-    5. Criar eventos mais curtos e objetivos
-
-    (LLM desativado para testes)
-    `;
-    // Salvar sugestões no banco de dados
-    await analysisRepo.createAnalysis({
-      tipo: "sugestoes",
-      conteudo: suggestionsContent,
-      criadoPor: adminId
-    });
-
-    // Notificar secretaria
-    console.log("Notificação simulada");
-
-    return suggestionsContent;
-  } catch (error) {
-    console.error("[LLM] Erro ao gerar sugestões de melhorias:", error);
-    throw error;
   }
 }
 
@@ -498,3 +400,7 @@ export async function sendOwnerDailySummary() {
 export async function testEmailConnection() {
   return await emailService.testEmailConnection();
 }
+
+// ============ RE-EXPORTAR FUNÇÕES DE ANÁLISE ============
+export const generateFrequencyAnalysis = analysisService.generateFrequencyAnalysis;
+export const generateImprovementSuggestions = analysisService.generateImprovementSuggestions;
