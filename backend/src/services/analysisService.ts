@@ -4,150 +4,41 @@ import * as attendanceRepo from "../repositories/attendanceRepository.js";
 import * as analysisRepo from "../repositories/analysisRepository.js";
 import { notifyOwner } from "../notification/notification.js";
 import { ENV } from "../core/env.js";
+import Groq from "groq-sdk"; 
 
-// ============ MANUS API TASK HELPER ============
-
-interface ManuTaskResponse {
-  id: string;
-  object: string;
-  status: "running" | "pending" | "completed" | "error";
-  model: string;
-  createdAt: string;
-  metadata?: {
-    credit_usage?: number;
-    task_url?: string;
-  };
-  output?: Array<{
-    id: string;
-    role: "user" | "assistant";
-    content: Array<{
-      type: string;
-      text?: string;
-    }>;
-  }>;
-  error?: {
-    code: string;
-    message: string;
-  };
-}
+// Inicializa o cliente da Groq com a chave mapeada do Railway
+const groq = new Groq({
+  apiKey: ENV.groqApiKey,
+});
 
 /**
- * Criar uma task no Manus e fazer polling até completar
+ * Envia o prompt diretamente para a API da Groq e retorna a análise imediatamente
  */
-async function createAndPollManuTask(prompt: string, systemPrompt: string): Promise<string> {
+async function generateGroqAnalysis(prompt: string, systemPrompt: string): Promise<string> {
   try {
-    console.log("[ANALYSIS] 🚀 Criando task no Manus...");
+    console.log("[ANALYSIS] 🚀 Enviando dados diretamente para a Groq...");
 
-    // 1. CRIAR TASK
-    const createResponse = await fetch(`${ENV.forgeApiUrl}/responses`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "API_KEY": ENV.forgeApiKey,
-      },
-      body: JSON.stringify({
-        input: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: `${systemPrompt}\n\n${prompt}`,
-              },
-            ],
-          },
-        ],
-        extra_body: {
-          task_mode: "agent",
-          agent_profile: "manus-1.6",
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile", // Modelo gratuito excelente para processar textos e relatórios
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt,
         },
-      }),
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      temperature: 0.2, // Baixa temperatura garante que a IA não invente dados fora do relatório
     });
 
-    if (!createResponse.ok) {
-      throw new Error(
-        `Falha ao criar task: ${createResponse.status} ${createResponse.statusText}`
-      );
-    }
-
-    const task = (await createResponse.json()) as ManuTaskResponse;
-    const taskId = task.id;
-
-    console.log(`[ANALYSIS] ✅ Task criada: ${taskId}`);
-    console.log(`[ANALYSIS] 📍 URL: ${task.metadata?.task_url || "N/A"}`);
-
-    // 2. FAZER POLLING ATÉ COMPLETAR
-    let currentTask = task;
-    let pollCount = 0;
-    const maxPolls = 120; // 120 * 5s = 10 minutos máximo
-    const pollInterval = 5000; // 5 segundos
-
-    while (
-      currentTask.status === "running" ||
-      currentTask.status === "pending"
-    ) {
-      if (pollCount >= maxPolls) {
-        throw new Error(
-          `Task expirou após ${maxPolls * (pollInterval / 1000)} segundos`
-        );
-      }
-
-      console.log(
-        `[ANALYSIS] ⏳ Aguardando... (${pollCount + 1}/${maxPolls}) Status: ${currentTask.status}`
-      );
-
-      // Aguardar antes de fazer polling
-      await new Promise((resolve) => setTimeout(resolve, pollInterval));
-
-      // Fazer polling
-      const statusResponse = await fetch(
-        `${ENV.forgeApiUrl}/responses/${taskId}`,
-        {
-          method: "GET",
-          headers: {
-            "API_KEY": ENV.forgeApiKey,
-          },
-        }
-      );
-
-      if (!statusResponse.ok) {
-        throw new Error(
-          `Falha ao verificar status: ${statusResponse.status} ${statusResponse.statusText}`
-        );
-      }
-
-      currentTask = (await statusResponse.json()) as ManuTaskResponse;
-      pollCount++;
-    }
-
-    // 3. VERIFICAR RESULTADO
-    if (currentTask.status === "error") {
-      throw new Error(
-        `Task retornou erro: ${currentTask.error?.message || "Erro desconhecido"}`
-      );
-    }
-
-    if (currentTask.status !== "completed") {
-      throw new Error(
-        `Status inesperado: ${currentTask.status}`
-      );
-    }
-
-    // 4. EXTRAIR CONTEÚDO DA RESPOSTA
-    const assistantMessage = currentTask.output?.find(
-      (msg) => msg.role === "assistant"
-    );
-    const textContent = assistantMessage?.content?.find(
-      (c) => c.type === "text"
-    );
-    const result = textContent?.text || "Análise não disponível";
-
-    console.log("[ANALYSIS] ✅ Task completada com sucesso!");
-    console.log(`[ANALYSIS] 💰 Créditos usados: ${currentTask.metadata?.credit_usage || "N/A"}`);
+    const result = completion.choices[0]?.message?.content || "Análise não disponível";
+    console.log("[ANALYSIS] ✅ Análise gerada com sucesso via Groq!");
 
     return result;
   } catch (error) {
-    console.error("[ANALYSIS] ❌ Erro ao criar/fazer polling de task:", {
+    console.error("[ANALYSIS] ❌ Erro ao gerar análise na Groq:", {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
     });
@@ -156,7 +47,7 @@ async function createAndPollManuTask(prompt: string, systemPrompt: string): Prom
 }
 
 /**
- * Gerar análises sobre frequência de alunos usando Manus API
+ * Gerar análises sobre frequência de alunos usando Groq API
  */
 export async function generateFrequencyAnalysis(adminId: number) {
   try {
@@ -247,7 +138,7 @@ export async function generateFrequencyAnalysis(adminId: number) {
       ).length,
     };
 
-    // Preparar prompt ENRIQUECIDO para Manus
+    // Preparar prompt ENRIQUECIDO
     const prompt = `Você é um analista de dados educacional especializado em análise de participação em eventos acadêmicos. Forneça insights profundos e acionáveis.
 
 CONTEXTO DO SISTEMA:
@@ -300,9 +191,7 @@ ${
 ALUNOS SEM PARTICIPAÇÃO (CRÍTICO - REQUEREM INTERVENÇÃO):
 ${
   lowParticipationStudents.length > 0
-    ? lowParticipationStudents
-        .map((s) => `- ${s.name} (${s.course})`)
-        .join("\n")
+    ? lowParticipationStudents.map((s) => `- ${s.name} (${s.course})`).join("\n")
     : "Todos os alunos participaram de pelo menos um evento"
 }
 
@@ -348,21 +237,16 @@ Responda em português de forma clara, estruturada, com dados específicos e rec
     const systemPrompt =
       "Você é um analista de dados educacional especializado em análise de participação em eventos acadêmicos. Forneça análises detalhadas e acionáveis.";
 
-    // Chamar Manus API com polling
     let analysisContent: string;
 
     try {
-      console.log("[ANALYSIS] 🤖 Chamando Manus API para análise de frequência...");
-      analysisContent = await createAndPollManuTask(prompt, systemPrompt);
-      console.log("[ANALYSIS] ✅ Análise gerada com sucesso via Manus");
+      console.log("[ANALYSIS] 🤖 Chamando Groq API para análise de frequência...");
+      analysisContent = await generateGroqAnalysis(prompt, systemPrompt); // 👈 Chamando a Groq
+      console.log("[ANALYSIS] ✅ Análise gerada com sucesso via Groq");
     } catch (apiError) {
-      console.error("[ANALYSIS] ❌ ERRO ao chamar Manus API:", {
-        error: apiError instanceof Error ? apiError.message : String(apiError),
-        stack: apiError instanceof Error ? apiError.stack : undefined,
-      });
+      console.error("[ANALYSIS] ❌ ERRO ao chamar Groq API:", apiError);
       console.warn("[ANALYSIS] ⚠️ Usando análise calculada como fallback");
 
-      // Análise calculada como fallback (COM AVISO)
       analysisContent = generateCalculatedAnalysis(
         students.length,
         events.length,
@@ -374,7 +258,7 @@ Responda em português de forma clara, estruturada, com dados específicos e rec
     }
 
     // Salvar análise no banco de dados
-    const analysis = await analysisRepo.createAnalysis({
+    await analysisRepo.createAnalysis({
       tipo: "frequencia",
       conteudo: analysisContent,
       criadoPor: adminId,
@@ -385,7 +269,7 @@ Responda em português de forma clara, estruturada, com dados específicos e rec
     // Notificar admin
     await notifyOwner({
       title: "✅ Análise de Frequência Gerada",
-      content: `Uma nova análise detalhada sobre padrões de frequência foi gerada. ${students.length} alunos analisados, ${totalParticipations} participações totais, ${topStudents.length} alunos com alta participação identificados.`,
+      content: `Uma nova análise detalhada sobre padrões de frequência foi gerada. ${students.length} alunos analisados, ${totalParticipations} participações totais.`,
     });
 
     return analysisContent;
@@ -396,7 +280,7 @@ Responda em português de forma clara, estruturada, com dados específicos e rec
 }
 
 /**
- * Gerar sugestões de melhorias usando Manus API
+ * Gerar sugestões de melhorias usando Groq API
  */
 export async function generateImprovementSuggestions(adminId: number) {
   try {
@@ -411,7 +295,6 @@ export async function generateImprovementSuggestions(adminId: number) {
       return "Dados insuficientes no sistema para gerar sugestões de melhorias.";
     }
 
-    // Coletar estatísticas avançadas
     let totalParticipations = 0;
     let totalCreditsDistributed = 0;
     const eventStats: Array<{
@@ -446,7 +329,6 @@ export async function generateImprovementSuggestions(adminId: number) {
     const avgCreditsPerStudent =
       students.length > 0 ? totalCreditsDistributed / students.length : 0;
 
-    // Identificar eventos bem-sucedidos vs mal-sucedidos
     const avgEventParticipation =
       eventStats.reduce((sum, e) => sum + e.participations, 0) /
       eventStats.length;
@@ -457,7 +339,7 @@ export async function generateImprovementSuggestions(adminId: number) {
       .filter((e) => e.participations < avgEventParticipation)
       .slice(0, 3);
 
-    // Preparar prompt ENRIQUECIDO para Manus
+    // Preparar prompt ENRIQUECIDO
     const prompt = `Você é um consultor educacional especializado em estratégias de engajamento estudantil e eventos acadêmicos.
 
 CONTEXTO:
@@ -525,21 +407,16 @@ Responda em português, de forma estruturada, com recomendações concretas e vi
     const systemPrompt =
       "Você é um consultor educacional especializado em estratégias de engajamento estudantil. Forneça sugestões práticas e acionáveis.";
 
-    // Chamar Manus API com polling
     let suggestionsContent: string;
 
     try {
-      console.log("[ANALYSIS] 🤖 Chamando Manus API para sugestões de melhorias...");
-      suggestionsContent = await createAndPollManuTask(prompt, systemPrompt);
-      console.log("[ANALYSIS] ✅ Sugestões geradas com sucesso via Manus");
+      console.log("[ANALYSIS] 🤖 Chamando Groq API para sugestões de melhorias...");
+      suggestionsContent = await generateGroqAnalysis(prompt, systemPrompt); // 👈 Chamando a Groq
+      console.log("[ANALYSIS] ✅ Sugestões geradas com sucesso via Groq");
     } catch (apiError) {
-      console.error("[ANALYSIS] ❌ ERRO ao chamar Manus API:", {
-        error: apiError instanceof Error ? apiError.message : String(apiError),
-        stack: apiError instanceof Error ? apiError.stack : undefined,
-      });
+      console.error("[ANALYSIS] ❌ ERRO ao chamar Groq API:", apiError);
       console.warn("[ANALYSIS] ⚠️ Usando sugestões calculadas como fallback");
 
-      // Sugestões calculadas como fallback (COM AVISO)
       suggestionsContent = generateCalculatedSuggestions(
         students.length,
         events.length,
@@ -548,7 +425,7 @@ Responda em português, de forma estruturada, com recomendações concretas e vi
     }
 
     // Salvar sugestões no banco de dados
-    const analysis = await analysisRepo.createAnalysis({
+    await analysisRepo.createAnalysis({
       tipo: "sugestoes",
       conteudo: suggestionsContent,
       criadoPor: adminId,
@@ -559,7 +436,7 @@ Responda em português, de forma estruturada, com recomendações concretas e vi
     // Notificar admin
     await notifyOwner({
       title: "💡 Sugestões de Melhorias Geradas",
-      content: `Novas sugestões estratégicas foram geradas baseadas na análise do sistema. ${successfulEvents.length} eventos bem-sucedidos identificados como modelo.`,
+      content: `Novas sugestões estratégicas foram geradas baseadas na análise do sistema.`,
     });
 
     return suggestionsContent;
@@ -570,7 +447,7 @@ Responda em português, de forma estruturada, com recomendações concretas e vi
 }
 
 /**
- * Gerar análise de eventos com baixa participação usando Manus API
+ * Gerar análise de eventos com baixa participação usando Groq API
  */
 export async function generateLowParticipationEventAnalysis(adminId: number) {
   try {
@@ -658,15 +535,12 @@ Responda em português, com recomendações específicas e acionáveis para cada
     let analysisContent: string;
 
     try {
-      console.log("[ANALYSIS] 🤖 Chamando Manus API para análise de eventos com baixa participação...");
-      analysisContent = await createAndPollManuTask(prompt, systemPrompt);
+      console.log("[ANALYSIS] 🤖 Chamando Groq API para eventos com baixa participação...");
+      analysisContent = await generateGroqAnalysis(prompt, systemPrompt); // 👈 Chamando a Groq
       console.log("[ANALYSIS] ✅ Análise de eventos com baixa participação gerada com sucesso");
     } catch (apiError) {
-      console.error("[ANALYSIS] ❌ ERRO ao chamar Manus API:", {
-        error: apiError instanceof Error ? apiError.message : String(apiError),
-        stack: apiError instanceof Error ? apiError.stack : undefined,
-      });
-      console.warn("[ANALYSIS] ⚠️ Usando análise calculada como fallback para eventos");
+      console.error("[ANALYSIS] ❌ ERRO ao chamar Groq API:", apiError);
+      console.warn("[ANALYSIS] ⚠️ Usando análise calculada como fallback");
 
       analysisContent = generateCalculatedLowParticipationAnalysis(
         lowParticipationEvents
@@ -674,7 +548,7 @@ Responda em português, com recomendações específicas e acionáveis para cada
     }
 
     // Salvar análise no banco de dados
-    const analysis = await analysisRepo.createAnalysis({
+    await analysisRepo.createAnalysis({
       tipo: "baixa_participacao",
       conteudo: analysisContent,
       criadoPor: adminId,
@@ -685,7 +559,7 @@ Responda em português, com recomendações específicas e acionáveis para cada
     // Notificar admin
     await notifyOwner({
       title: "⚠️ Análise de Eventos com Baixa Participação",
-      content: `${lowParticipationEvents.length} eventos identificados com participação abaixo da média. Recomendações geradas para melhoria.`,
+      content: `${lowParticipationEvents.length} eventos identificados com participação abaixo da média.`,
     });
 
     return analysisContent;
@@ -698,7 +572,7 @@ Responda em português, com recomendações específicas e acionáveis para cada
   }
 }
 
-// ============ FALLBACK FUNCTIONS (Análises Calculadas com Aviso) ============
+// ============ FALLBACK FUNCTIONS ============
 
 function generateCalculatedAnalysis(
   totalStudents: number,
@@ -711,7 +585,6 @@ function generateCalculatedAnalysis(
   return `⚠️ **AVISO: Esta análise foi gerada automaticamente com dados calculados, NÃO foi processada por IA.**
 
 ---
-
 ANÁLISE DE FREQUÊNCIA - RESUMO CALCULADO
 
 Estatísticas Gerais:
@@ -729,16 +602,7 @@ ${
     ? lowParticipationStudents.map((s) => `- ${s.name}`).join("\n")
     : "Nenhum"
 }
-
-Recomendações Básicas:
-1. Manter engajamento dos alunos com alta participação
-2. Incentivar alunos com baixa participação
-3. Diversificar tipos de eventos
-
----
-
-*Para uma análise completa com insights de IA, tente gerar novamente.*
-  `;
+---`;
 }
 
 function generateCalculatedSuggestions(
@@ -749,54 +613,25 @@ function generateCalculatedSuggestions(
   return `⚠️ **AVISO: Estas sugestões foram geradas automaticamente com dados calculados, NÃO foram processadas por IA.**
 
 ---
-
 SUGESTÕES DE MELHORIAS - RESUMO CALCULADO
 
 Estatísticas:
 - Alunos: ${totalStudents}
 - Eventos: ${totalEvents}
 - Média de Participação: ${avgParticipation.toFixed(2)}
-
-Sugestões Práticas:
-1. Aumentar divulgação de eventos
-2. Variar tipos e horários de eventos
-3. Implementar gamificação com créditos
-4. Criar grupos de interesse específicos
-5. Feedback regular aos alunos sobre progresso
-
-Próximos Passos:
-- Escolher 2-3 sugestões para implementar
-- Medir impacto em 2-4 semanas
-- Ajustar conforme necessário
-
----
-
-*Para sugestões estratégicas com IA, tente gerar novamente.*
-  `;
+---`;
 }
 
 function generateCalculatedLowParticipationAnalysis(lowParticipationEvents: any[]): string {
   return `⚠️ **AVISO: Esta análise foi gerada automaticamente com dados calculados, NÃO foi processada por IA.**
 
 ---
-
 Eventos com Baixa Participação Identificados:
-
 ${lowParticipationEvents
   .map(
     (e) =>
       `- ${e.name} (${e.date.toLocaleDateString("pt-BR")}): ${e.participations} participações`
   )
   .join("\n")}
-
-Recomendações Básicas:
-1. Revisar data/horário dos eventos
-2. Melhorar divulgação e comunicação
-3. Considerar reformulação do tema ou formato
-4. Aumentar incentivo de créditos se apropriado
-
----
-
-*Para uma análise diagnóstica completa com IA, tente gerar novamente.*
-  `;
+---`;
 }
