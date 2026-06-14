@@ -24,6 +24,7 @@
     "drizzle-orm": "^0.45.1",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
+    "groq-sdk": "^1.2.1",
     "jose": "^6.2.2",
     "mysql2": "^3.19.1",
     "nodemailer": "^8.0.7",
