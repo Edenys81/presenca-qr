@@ -39,11 +39,11 @@ async function createAndPollManuTask(prompt: string, systemPrompt: string): Prom
     console.log("[ANALYSIS] 🚀 Criando task no Manus...");
 
     // 1. CRIAR TASK
-    const createResponse = await fetch(`${ENV.forgeApiUrl}/v1/tasks`, {
+    const createResponse = await fetch(`${ENV.forgeApiUrl}/responses`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "authorization": `Bearer ${ENV.forgeApiKey}`,
+        "API_KEY": ENV.forgeApiKey,
       },
       body: JSON.stringify({
         input: [
@@ -52,16 +52,15 @@ async function createAndPollManuTask(prompt: string, systemPrompt: string): Prom
             content: [
               {
                 type: "input_text",
-                text: prompt,
+                text: `${systemPrompt}\n\n${prompt}`,
               },
             ],
           },
         ],
         extra_body: {
           task_mode: "agent",
-          agent_profile: "manus-1.6-lite",
+          agent_profile: "manus-1.6",
         },
-        system_prompt: systemPrompt,
       }),
     });
 
@@ -102,11 +101,11 @@ async function createAndPollManuTask(prompt: string, systemPrompt: string): Prom
 
       // Fazer polling
       const statusResponse = await fetch(
-        `${ENV.forgeApiUrl}/v1/tasks/${taskId}`,
+        `${ENV.forgeApiUrl}/responses/${taskId}`,
         {
           method: "GET",
           headers: {
-            "authorization": `Bearer ${ENV.forgeApiKey}`,
+            "API_KEY": ENV.forgeApiKey,
           },
         }
       );
